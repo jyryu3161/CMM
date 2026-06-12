@@ -209,12 +209,21 @@ def theoretical_yield(
         substrate = substrate or _detect_substrate(model)
         substrate_rxn = model.reactions.get_by_id(substrate)
         substrate_uptake = abs(substrate_rxn.lower_bound)
+        if substrate_uptake <= 1e-9:
+            # A closed substrate (lower_bound 0) gives a 0 denominator and a NaN yield. This
+            # is plausible (e.g. a genome-scale medium with glucose shut, see rule R14), so
+            # fail loudly with an actionable message instead of returning a silent NaN.
+            raise ValueError(
+                f"substrate '{substrate}' has no uptake capacity (lower_bound "
+                f"{substrate_rxn.lower_bound}); open its uptake or choose another substrate "
+                f"before computing a theoretical yield."
+            )
         substrate_rxn.bounds = (-substrate_uptake, -substrate_uptake)
         model.objective = model.reactions.get_by_id(product)
         model.objective_direction = "max"
         solution = model.optimize()
         product_flux = float(solution.fluxes[product])
-        molar_yield = product_flux / substrate_uptake if substrate_uptake > 1e-9 else float("nan")
+        molar_yield = product_flux / substrate_uptake
 
         substrate_carbon = _carbon_count(substrate_rxn)
         product_carbon = _carbon_count(model.reactions.get_by_id(product))

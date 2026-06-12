@@ -37,6 +37,13 @@ def test_theoretical_yield_does_not_mutate_model(ecoli_core):
     assert ecoli_core.slim_optimize() == pytest.approx(0.8739, abs=1e-3)
 
 
+def test_theoretical_yield_raises_on_closed_substrate(ecoli_core):
+    # A closed substrate (lower_bound 0) would divide by zero -> NaN; fail loudly instead.
+    ecoli_core.reactions.get_by_id(GLC).bounds = (0.0, 1000.0)
+    with pytest.raises(ValueError, match="no uptake capacity"):
+        theoretical_yield(ecoli_core, SUCC, substrate=GLC, aerobic=True)
+
+
 def test_production_envelope_is_growth_coupled(ecoli_core):
     envelope = production_envelope(ecoli_core, SUCC, points=15)
     assert envelope.max_growth == pytest.approx(0.8739, abs=1e-2)

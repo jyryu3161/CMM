@@ -80,8 +80,13 @@ def flux_log_change(
     for rid in keys:
         a = abs(source.get(rid, 0.0)) + pseudocount
         b = abs(target.get(rid, 0.0)) + pseudocount
-        if a == 0.0:  # only reachable when pseudocount=0 and source flux is exactly 0
+        # The zero branches are only reachable when pseudocount=0 (the default 1e-3 bounds
+        # every change). Guard both off-states symmetrically: log2(0/0)=0, log2(b/0)=+inf
+        # (switch on), log2(0/a)=-inf (switch off) — the last would raise a math domain error.
+        if a == 0.0:
             out[rid] = 0.0 if b == 0.0 else math.inf
+        elif b == 0.0:
+            out[rid] = -math.inf
         else:
             out[rid] = math.log2(b / a)
     return out

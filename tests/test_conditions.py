@@ -62,6 +62,13 @@ def test_flux_log_change_zero_pseudocount_is_guarded():
     assert lc["R2"] == math.inf
 
 
+def test_flux_log_change_switch_off_is_negative_inf():
+    # A reaction that switches OFF (nonzero source -> zero target) with pseudocount=0 would
+    # hit log2(0/a); it must return -inf symmetrically with the switch-on (+inf) case.
+    lc = flux_log_change({"R": 7.0}, {"R": 0.0}, pseudocount=0.0)
+    assert lc["R"] == -math.inf
+
+
 def test_sign_flips_detects_reversal():
     a = {"R1": 5.0, "R2": -3.0, "R3": 2.0}
     b = {"R1": -5.0, "R2": -3.0, "R3": 4.0}

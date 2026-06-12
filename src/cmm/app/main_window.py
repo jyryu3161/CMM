@@ -1057,19 +1057,24 @@ class CmmMainWindow(QMainWindow):
         method = self.method_combo.currentText()
         perturbation = self.perturbation_combo.currentText()
         alpha = self.alpha_spin.value()
-        reference = reference_state_pfba(self.model, name="source")
-        direction = differential_expression(
-            self.model, source_expression, target_expression, reference=reference
-        )
-        ranking = revert_targets(
-            self.model,
-            None,
-            reference,
-            direction,
-            method=method,
-            alpha=alpha,
-            perturbation=perturbation,
-        )
+        try:
+            reference = reference_state_pfba(self.model, name="source")
+            direction = differential_expression(
+                self.model, source_expression, target_expression, reference=reference
+            )
+            ranking = revert_targets(
+                self.model,
+                None,
+                reference,
+                direction,
+                method=method,
+                alpha=alpha,
+                perturbation=perturbation,
+            )
+        except Exception as exc:  # surface solver-capability/model errors instead of freezing
+            self.revert_summary.setText(f"Revert prediction failed: {exc}")
+            self.status_label.setText(f"Revert prediction failed ({method}).")
+            return
         rows = ranking.to_records()
         self.revert_table.setRowCount(len(rows))
         for i, record in enumerate(rows):

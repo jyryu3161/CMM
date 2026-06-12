@@ -137,9 +137,13 @@ def eflux2(
         prob = model.problem
         objective_expr = model.objective.expression
         # Hold the biological objective near its optimum. For a maximized objective that is a
-        # lower bound; for a minimized one it is an upper bound.
+        # lower bound; for a minimized one it is an upper bound. The min-direction band must
+        # relax UPWARD from the optimum regardless of sign — dividing a *negative* minimized
+        # optimum by objective_fraction tightens past the optimum and makes the QP infeasible,
+        # so relax by a fraction of |optimum| instead (equals optimum/fraction for optimum>0).
         if model.objective_direction == "min":
-            floor = prob.Constraint(objective_expr, ub=optimum / objective_fraction, name="_eflux2_floor")
+            slack = abs(optimum) * (1.0 / objective_fraction - 1.0)
+            floor = prob.Constraint(objective_expr, ub=optimum + slack, name="_eflux2_floor")
         else:
             floor = prob.Constraint(objective_expr, lb=objective_fraction * optimum, name="_eflux2_floor")
         model.add_cons_vars([floor])

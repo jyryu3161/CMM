@@ -5,7 +5,7 @@ toward a reference (e.g. healthy) state. This is the inverse of the production-d
 services: instead of pushing flux toward a product, it ranks interventions by how well they
 transform the source flux distribution in the direction implied by two-state expression.
 
-Method (rMTA, Valcarcel 2019, continuous form):
+Method (robust MTA, in the spirit of Valcarcel 2019, continuous form):
   For each knockout, solve a MOMA-based QP three times with different transformation weights
   - best  (alpha): reward moving target reactions in the desired direction
   - moma  (0):      pure minimal adjustment, neutral
@@ -14,6 +14,16 @@ Method (rMTA, Valcarcel 2019, continuous form):
   reactions) / (1 + steady-reaction disturbance). The robust score rTS combines the three so
   a knockout ranks high only when it transforms well in the best case and is not harmful in
   the worst case.
+
+  NOTE — deliberate deviations from the published rMTA, documented and validated in
+  ``docs/design-revert-metabolism.md``: the robust score uses the additive worst-case form
+  ``mTS + wTS`` (gated on bTS/wTS) rather than the textbook multiplicative gate
+  ``mTS * (bTS - wTS)``, and the TS denominator is the L2 steady disturbance with a ``+1``
+  regularizer rather than the published L1 steady deviation. The textbook gate (which fires
+  only when wTS < 0) zeroes out knockouts that *force* a correct reroute; the additive form
+  is the one validated to rank such forced-reversion targets correctly, so it is the default.
+  Treat the scores as a self-consistent ranking heuristic, not numerically identical to the
+  cobratoolbox rMTA.m output.
 
 The continuous rMTA runs on any QP solver. An optional original-MTA MIQP mode is gated on a
 MIQP-capable solver.
@@ -179,7 +189,14 @@ def _transformation_score(
     direction: DirectionMap,
     target_rxns: list[str],
 ) -> float:
-    """Net correct movement of target reactions, normalized by steady disturbance."""
+    """Net correct movement of target reactions, normalized by steady disturbance.
+
+    TS = (sum |delta| over correctly-moved targets - sum |delta| over wrongly-moved targets)
+         / (1 + sum delta^2 over steady reactions).
+    The L1 numerator matches the published transformation score; the denominator is the L2
+    steady disturbance plus a +1 regularizer (a deliberate, documented choice — see the module
+    docstring — that keeps the score finite and bounded rather than the published L1 form).
+    """
 
     correct = 0.0
     wrong = 0.0
