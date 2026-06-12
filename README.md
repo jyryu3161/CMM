@@ -49,7 +49,32 @@ pip install "cmm[desktop,design] @ https://github.com/jyryu3161/CMM/releases/dow
 pip install "cmm[desktop,design] @ git+https://github.com/jyryu3161/CMM.git@v0.1.0"
 ```
 
-### Install from source (development)
+### Install from source with one command
+
+Clone the repository and run the installer — it creates an isolated virtual environment
+(`./.venv`), installs CMM (editable) with the desktop GUI, strain design, and the `gurobipy`
+solver, and prints the active solver:
+
+```bash
+git clone https://github.com/jyryu3161/CMM.git && cd CMM
+
+./install.sh                # macOS / Linux (and Windows Git Bash / WSL)
+#   .\install.ps1           # Windows PowerShell
+
+# then launch the workbench:
+.venv/bin/python -m cmm.app          # Windows: .venv\Scripts\python -m cmm.app
+```
+
+Useful flags (same names on `install.ps1` as `-Dev`, `-NoGurobi`, `-CoreOnly`):
+
+```bash
+./install.sh --dev          # also install tests + ruff
+./install.sh --no-gurobi    # open GLPK only (FBA/pFBA/FVA/FSEOF)
+./install.sh --core-only    # core library, no GUI / strain-design extras
+./install.sh --help         # all options (--python, --venv, ...)
+```
+
+### Install from source manually
 
 ```bash
 git clone https://github.com/jyryu3161/CMM.git && cd CMM
