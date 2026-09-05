@@ -66,12 +66,25 @@ def test_branches_are_not_coupled_to_each_other():
     assert len(sets) == 3
 
 
-def test_grouping_is_over_the_reactions_given_not_the_whole_model():
+def test_candidate_selection_preserves_the_unselected_network():
     model = _branched()
-    # Drop one branch: the other must then carry exactly the inlet flux, joining that set.
+    # RIGHT is not a candidate, but still carries flux: LEFT is not forced to equal IN.
     sets = coupled_reaction_sets(model, ["IN", "LEFT", "OUT"])
-    assert len(sets) == 1
-    assert set(sets.members("LEFT")) == {"IN", "LEFT", "OUT"}
+    assert len(sets) == 2
+    assert sets.members("LEFT") == ("LEFT",)
+    assert sets.members("IN") == ("IN", "OUT")
+
+
+def test_parallel_candidates_are_not_merged_after_essential_reactions_are_filtered():
+    model = _branched()
+    model.objective = "OUT"
+    for left, right in ((10, 0), (0, 10)):
+        with model:
+            model.reactions.LEFT.bounds = (left, left)
+            model.reactions.RIGHT.bounds = (right, right)
+            assert model.slim_optimize() == pytest.approx(10)
+    sets = coupled_reaction_sets(model, ["LEFT", "RIGHT"])
+    assert sets.representatives == ("LEFT", "RIGHT")
 
 
 def test_opposite_sign_ratio_groups_together():

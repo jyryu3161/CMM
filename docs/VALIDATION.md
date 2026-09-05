@@ -379,6 +379,11 @@ that cannot support it fall back to a fold-change cut — `gene_directions` on a
 or `gene_directions_by_fold_change` on the same replicate frames — which is not the published
 test, and a run that used it must say so.
 
+SC-02 accepts finite, non-negative linear expression measurements. It keeps linear replicate
+means for reference inference and applies `log2(value + 1)` to each replicate before direction
+tests, matching the desktop comparison. Regression tests distinguish a small relative change
+(`100 → 102`) from a two-unit log2 change and check the replicate-level t-test transform.
+
 References: Yizhak K, Gabay O, Cohen H, Ruppin E (2013), *Nat Commun* 4:2632,
 <https://doi.org/10.1038/ncomms3632>; Valcárcel LV, Torrano V, Tobalina L, Carracedo A,
 Planes FJ (2019), *Bioinformatics* 35(21):4350–4355,
@@ -394,6 +399,14 @@ distance-reduction scoring the same paper uses as its comparison method. Cite Yi
 
 Note that Yizhak et al. report the MOMA-style scoring as *markedly inferior* to MTA, and it is
 CMM's default. State which path produced a ranking.
+
+Regression tests cover failed MOMA solves with negative-scoring viable alternatives: failures
+retain their status and a `-inf` sentinel, follow successful targets, and are excluded from the
+report's rank comparison. Candidate tests retain the full network for null-space coupling and
+the full GPR deletion signature for gene grouping, including jointly essential deletions.
+Bundle tests remove the original expression files, relocate the run, replay it from archived
+inputs, and check identical rankings. Input corruption, missing input artifacts, and external
+paths in replay configs fail validation.
 
 ### Methods with no published source
 

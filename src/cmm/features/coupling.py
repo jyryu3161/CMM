@@ -86,10 +86,9 @@ def coupled_reaction_sets(
     Rows are normalised and sign-canonicalised before hashing, so ``v_i = -3 v_j`` groups with
     ``v_i = 3 v_j``: the deletion consequence is the same either way.
 
-    ``reactions`` defaults to the whole model. Pass the surviving subset when dead-end and
-    essential reactions have already been removed — the grouping is computed over exactly the
-    columns given, which is what makes the result a candidate universe rather than a general
-    property of the network.
+    ``reactions`` selects the candidates to return, not the network to solve. Coupling is
+    always computed from the full model: reactions excluded as knockout candidates still
+    carry flux and must remain in S.
     """
 
     if tolerance <= 0:
@@ -103,15 +102,17 @@ def coupled_reaction_sets(
     if missing:
         raise KeyError(f"reactions absent from the model: {sorted(missing)[:5]}")
 
-    index = {rid: i for i, rid in enumerate(rxn_ids)}
+    index = {reaction.id: i for i, reaction in enumerate(model.reactions)}
     met_index = {met.id: i for i, met in enumerate(model.metabolites)}
-    stoich = np.zeros((len(met_index), len(rxn_ids)))
-    for rid in rxn_ids:
-        for met, coeff in model.reactions.get_by_id(rid).metabolites.items():
-            stoich[met_index[met.id], index[rid]] = coeff
+    stoich = np.zeros((len(met_index), len(model.reactions)))
+    for reaction in model.reactions:
+        for met, coeff in reaction.metabolites.items():
+            stoich[met_index[met.id], index[reaction.id]] = coeff
 
     basis = null_space(stoich)
-    norms = np.linalg.norm(basis, axis=1) if basis.size else np.zeros(len(rxn_ids))
+    norms = (
+        np.linalg.norm(basis, axis=1) if basis.size else np.zeros(len(model.reactions))
+    )
 
     groups: dict[str, int] = {}
     signatures: dict[tuple, int] = {}

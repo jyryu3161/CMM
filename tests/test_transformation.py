@@ -114,3 +114,25 @@ def test_direction_from_states_labels_its_own_rule():
     direction = direction_from_states(source, target)
     assert direction.metadata["direction_rule"] == "flux_state_difference"
     assert direction.metadata["from"] == "A" and direction.metadata["to"] == "B"
+
+
+@pytest.mark.requires_qp
+def test_failed_moma_candidate_is_last_and_retains_status(parallel_pathway_model):
+    model = parallel_pathway_model
+    source = FluxState({"SUPPLY": 10, "R1": 10, "R2": 10, "R3": 0, "BIOMASS": 10})
+    target = FluxState({"SUPPLY": 10, "R1": 10, "R2": 9, "R3": 1, "BIOMASS": 10})
+    ranking = transformation_targets(model, source, target, targets=["g1", "g2"])
+    frame = ranking.to_frame().set_index("target_id")
+    assert ranking.best().target_id == "g2"
+    assert frame.loc["g2", "score"] < 0
+    assert frame.loc["g2", "status"] == "optimal"
+    assert frame.loc["g1", "score"] == float("-inf")
+    assert frame.loc["g1", "status"] == "infeasible"
+    assert list(frame.index) == ["g2", "g1"]
+    assert ranking.sorted(descending=False).targets[-1].target_id == "g1"
+    assert ranking.metadata["n_nonoptimal"] == 1
+    assert model.slim_optimize() == pytest.approx(10)
+
+    failed = transformation_targets(model, source, target, targets=["g1"])
+    assert failed.best() is None
+    assert len(failed.to_frame()) == 1

@@ -177,8 +177,9 @@ def transformation_targets(
             scored.append(
                 TargetScore(
                     pert.target_id,
-                    0.0,
+                    float("-inf"),
                     target_name=target_display_name(model, pert.target_id, pert.kind),
+                    status=result.status,
                 )
             )
             continue
@@ -191,6 +192,7 @@ def transformation_targets(
                 pert.target_id,
                 baseline - distance_to_target,
                 target_name=target_display_name(model, pert.target_id, pert.kind),
+                status=result.status,
             )
         )
 

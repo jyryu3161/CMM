@@ -33,6 +33,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+import math
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Mapping, Sequence, cast
 
@@ -52,6 +53,9 @@ ChangedRanking = Literal["p_value", "fold_change"]
 #: set. Each one adds a binary variable to the MIQP, so the cut is also what decides whether a
 #: genome-scale run finishes.
 PUBLISHED_CHANGED_SET_RANGE = (100, 200)
+
+# Same per-replicate transform used by the desktop expression comparison.
+_EXPRESSION_PSEUDOCOUNT = 1.0
 
 
 @dataclass(frozen=True)
@@ -144,6 +148,9 @@ class TransformationWorkflowConfig:
     Swapping them is a different scientific question with a different answer, and nothing in
     the model can detect the mistake — the agent skill is required to confirm the direction
     rather than infer it from file names.
+
+    Both expression files contain non-negative linear measurements. Reference fluxes use
+    their linear replicate means; direction tests use log2(value + 1) per replicate.
     """
 
     model_path: str | Path
@@ -252,6 +259,9 @@ class TransformationWorkflowConfig:
             "target_expression": str(self.target_expression_path),
             "reference_method": self.reference_method,
             "reference_objective_fraction": self.reference_objective_fraction,
+            "expression_scale": "linear",
+            "direction_transform": "log2(value + pseudocount)",
+            "direction_pseudocount": _EXPRESSION_PSEUDOCOUNT,
             "significance": self.direction.significance,
             "p_value_cutoff": self.direction.p_value_cutoff,
             "up_threshold": self.direction.up_threshold,
@@ -348,6 +358,7 @@ _STAGE_DIRECTORIES = (
     "05_transformation",
     "06_validation",
     "model",
+    "inputs",
     "scripts",
 )
 
@@ -408,6 +419,7 @@ def _read_expression(path: Path) -> "pd.DataFrame":
     fact about the file, so it is inspected and reported rather than asked about.
     """
 
+    import numpy as np
     import pandas as pd
 
     frame = pd.read_csv(path, sep=None, engine="python", index_col=0)
@@ -418,6 +430,10 @@ def _read_expression(path: Path) -> "pd.DataFrame":
         )
     if numeric.isna().any().any():
         raise TransformationWorkflowError(f"{path.name} carries missing values")
+    if not np.isfinite(numeric.to_numpy()).all() or (numeric < 0).any().any():
+        raise TransformationWorkflowError(
+            f"{path.name} must contain finite, non-negative linear expression values"
+        )
     numeric.index = [str(value) for value in numeric.index]
     if numeric.index.has_duplicates:
         raise TransformationWorkflowError(f"{path.name} repeats a gene id")
@@ -429,21 +445,25 @@ def _gene_directions(
     target: "pd.DataFrame",
     config: DirectionConfig,
 ) -> "pd.DataFrame":
-    """Per-gene direction with its evidence, by whichever test the config selected."""
+    """Compare linear expression in log2 space, preserving linear reference inputs."""
+
+    import numpy as np
 
     from cmm.omics.differential import (
         gene_directions_by_fold_change,
         gene_directions_from_replicates,
     )
 
+    source_log2 = np.log2(source + _EXPRESSION_PSEUDOCOUNT)
+    target_log2 = np.log2(target + _EXPRESSION_PSEUDOCOUNT)
     try:
         if config.significance == "ttest":
             return gene_directions_from_replicates(
-                source, target, p_value_cutoff=config.p_value_cutoff
+                source_log2, target_log2, p_value_cutoff=config.p_value_cutoff
             )
         return gene_directions_by_fold_change(
-            source,
-            target,
+            source_log2,
+            target_log2,
             up_threshold=config.up_threshold,
             down_threshold=config.down_threshold,
         )
@@ -495,6 +515,8 @@ def _build_candidates(
         open_reactions = [rid for rid in open_reactions if rid not in blocked]
         record["n_blocked_removed"] = len(blocked)
 
+    active_reactions = set(open_reactions)
+    threshold = None
     if config.candidates.exclude_essential and wild_type == wild_type and wild_type > 0:
         deletion = single_reaction_deletion(
             model, reaction_list=open_reactions, processes=1
@@ -517,23 +539,41 @@ def _build_candidates(
             return tuple(sets.representatives), record
         return tuple(sorted(open_reactions)), record
 
-    # Gene level: enumerate genes and keep one per distinct blocked-reaction signature, which
-    # is how the production workflow already deduplicates its single-knockout screen. Genes
-    # blocking nothing inside the allowed set cannot be scored and are recorded as dropped.
-    allowed = set(open_reactions)
-    signatures: dict[tuple[str, ...], str] = {}
+    # A candidate filter does not change the phenotype of a gene deletion. Keep its full
+    # signature, then test each distinct deletion for growth: jointly blocking individually
+    # nonessential reactions can also be lethal.
+    signatures: dict[tuple[str, ...], list[str]] = {}
     inert = 0
     for perturbation in gene_perturbations(model):
-        signature = tuple(
-            sorted(rid for rid in perturbation.reaction_ids if rid in allowed)
-        )
-        if not signature:
+        signature = tuple(sorted(perturbation.reaction_ids))
+        if not active_reactions.intersection(signature):
             inert += 1
             continue
-        signatures.setdefault(signature, perturbation.target_id)
+        signatures.setdefault(signature, []).append(perturbation.target_id)
+    gene_groups: dict[str, list[str]] = {}
+    essential_genes = 0
+    for signature, genes in signatures.items():
+        if threshold is not None:
+            with model:
+                for rid in signature:
+                    model.reactions.get_by_id(rid).bounds = (0.0, 0.0)
+                growth = model.slim_optimize()
+                viable = (
+                    model.solver.status == "optimal"
+                    and math.isfinite(growth)
+                    and growth > 0.0
+                    and growth >= threshold
+                )
+            if not viable:
+                essential_genes += len(genes)
+                continue
+        represented = sorted(genes)
+        gene_groups[represented[0]] = represented
     record["n_genes_inert"] = inert
-    record["n_distinct_blocked_signatures"] = len(signatures)
-    return tuple(sorted(signatures.values())), record
+    record["n_genes_essential_removed"] = essential_genes
+    record["n_distinct_blocked_signatures"] = len(gene_groups)
+    record["represented_genes"] = gene_groups
+    return tuple(sorted(gene_groups)), record
 
 
 def run_transformation_target_discovery(
@@ -751,6 +791,7 @@ def _write_reproduction_scripts(
     *,
     root: Path,
     model_relative: str,
+    expression_relatives: Mapping[str, str],
 ) -> None:
     """Write the three entry points that make the directory replayable on its own.
 
@@ -764,6 +805,9 @@ def _write_reproduction_scripts(
 
     config_payload = cast(dict[str, object], _jsonable(asdict(result.config)))
     config_payload["model_path"] = f"../{model_relative}"
+    config_payload.update(
+        {field: f"../{relative}" for field, relative in expression_relatives.items()}
+    )
     config_payload["output_dir"] = f"../../{root.name}__reproduced"
     config_payload["overwrite"] = False
     writer.json(
@@ -882,6 +926,7 @@ def _moma_baseline(model, reference, target_expression, candidates, config):
             "target_id": t.target_id,
             **({"target_name": t.target_name} if named else {}),
             "moma_score": float(t.score),
+            "status": t.status,
             "rank": i + 1,
         }
         for i, t in enumerate(ranking.sorted().targets)
@@ -954,6 +999,17 @@ def _export(
             f"output directory is not empty: {root}; choose a new directory or set "
             "overwrite=True"
         )
+    # Capture input bytes before cleanup, including when an in-place rerun reads its own
+    # archived model and expression tables.
+    model_path = Path(config.model_path)
+    model_bytes = model_path.read_bytes() if model_path.is_file() else None
+    expression_inputs = {
+        field: (Path(path).suffix or ".csv", Path(path).read_bytes())
+        for field, path in (
+            ("source_expression_path", config.source_expression_path),
+            ("target_expression_path", config.target_expression_path),
+        )
+    }
     if config.overwrite:
         # Remove only workflow-owned paths, so permission to rerun is never permission to
         # delete a user's unrelated files that happen to share the directory.
@@ -975,9 +1031,9 @@ def _export(
 
     writer = _ArtifactWriter(root, error_type=TransformationWorkflowError)
 
-    model_relative = f"model/{Path(config.model_path).name}"
-    if Path(config.model_path).is_file():
-        shutil.copy2(config.model_path, root / model_relative)
+    model_relative = f"model/{model_path.name}"
+    if model_bytes is not None:
+        (root / model_relative).write_bytes(model_bytes)
     else:
         write_sbml_model(model, str(root / model_relative))
     writer.existing(
@@ -986,6 +1042,19 @@ def _export(
         role="model",
         media_type="application/sbml+xml",
     )
+
+    expression_relatives: dict[str, str] = {}
+    for input_field, (suffix, payload) in expression_inputs.items():
+        role = input_field.removesuffix("_path")
+        relative = f"inputs/{role}{suffix}"
+        (root / relative).write_bytes(payload)
+        expression_relatives[input_field] = relative
+        writer.existing(
+            relative,
+            stage="inputs",
+            role=role,
+            media_type="text/tab-separated-values" if suffix == ".tsv" else "text/csv",
+        )
 
     writer.csv(
         "01_preflight/preflight.csv",
@@ -1058,17 +1127,32 @@ def _export(
 
     exported_config = cast(dict[str, object], _jsonable(asdict(config)))
     exported_config["model_path"] = model_relative
+    exported_config.update(expression_relatives)
     exported_config["output_dir"] = "."
     writer.json(
         "00_config.json", exported_config, stage="root", role="workflow_configuration"
     )
     writer.json(
-        "00_provenance.json", dict(result.provenance), stage="root", role="provenance"
+        "00_provenance.json",
+        {
+            **result.provenance,
+            "model_path": model_relative,
+            **{
+                field.removesuffix("_path"): relative
+                for field, relative in expression_relatives.items()
+            },
+        },
+        stage="root",
+        role="provenance",
     )
     writer.json("00_summary.json", result.summary(), stage="root", role="summary")
 
     _write_reproduction_scripts(
-        writer, result, root=root, model_relative=model_relative
+        writer,
+        result,
+        root=root,
+        model_relative=model_relative,
+        expression_relatives=expression_relatives,
     )
 
     manifest_record = ArtifactRecord(

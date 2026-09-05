@@ -26,6 +26,8 @@ class TargetScore:
     #: is why it never replaces ``target_id``: names are not unique and not always present,
     #: whereas the id is the key that provenance and reproduction are written against.
     target_name: str = ""
+    #: Optional solve status; absent for services that only return scored targets.
+    status: str | None = None
 
     def __post_init__(self) -> None:
         if not self.target_id:
@@ -60,11 +62,15 @@ class TargetRanking:
         return len(self.targets)
 
     def sorted(self, descending: bool = True) -> TargetRanking:
-        """Return a copy ordered by score, with target_id as a deterministic tiebreak."""
+        """Order by score then target_id, retaining failed solves after scored targets."""
 
         ordered = sorted(
             self.targets,
-            key=lambda t: (-t.score if descending else t.score, t.target_id),
+            key=lambda t: (
+                t.status is not None and t.status != "optimal",
+                -t.score if descending else t.score,
+                t.target_id,
+            ),
         )
         return TargetRanking(
             method=self.method, targets=tuple(ordered), metadata=self.metadata
@@ -75,19 +81,25 @@ class TargetRanking:
 
     def best(self) -> TargetScore | None:
         ordered = self.sorted().targets
-        return ordered[0] if ordered else None
+        return next(
+            (target for target in ordered if target.status in (None, "optimal")),
+            None,
+        )
 
     def to_records(self) -> list[dict]:
         records: list[dict] = []
         # The column only appears when something was actually named, so a ranking over a model
         # that names nothing exports exactly the table it did before.
         named = any(t.target_name for t in self.targets)
+        has_status = any(t.status is not None for t in self.targets)
         for rank, t in enumerate(self.sorted().targets, start=1):
             row: dict = {"rank": rank, "target_id": t.target_id}
             if named:
                 row["target_name"] = t.target_name
             row["score"] = t.score
             row.update(t.detail)
+            if has_status:
+                row["status"] = t.status
             records.append(row)
         return records
 

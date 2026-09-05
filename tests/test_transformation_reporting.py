@@ -110,6 +110,8 @@ def bundle(tmp_path: Path) -> Path:
         artifacts[role] = entry
 
     add("model", "model/model.xml", "<sbml/>\n")
+    add("source_expression", "inputs/source.csv", "gene,expression\nb4025,8\n")
+    add("target_expression", "inputs/target.csv", "gene,expression\nb4025,1\n")
     add(
         "preflight",
         "01_preflight/preflight.csv",
@@ -173,8 +175,28 @@ def bundle(tmp_path: Path) -> Path:
     add(
         "workflow_configuration",
         "00_config.json",
-        json.dumps({"method": "rmta"}, indent=2),
+        json.dumps(
+            {
+                "method": "rmta",
+                "model_path": "model/model.xml",
+                "source_expression_path": "inputs/source.csv",
+                "target_expression_path": "inputs/target.csv",
+            },
+            indent=2,
+        ),
     )
+    add(
+        "reproduction_config",
+        "scripts/transformation_config.json",
+        json.dumps(
+            {
+                "model_path": "../model/model.xml",
+                "source_expression_path": "../inputs/source.csv",
+                "target_expression_path": "../inputs/target.csv",
+            }
+        ),
+    )
+    add("reproduce_script", "scripts/reproduce.py", "# renderer fixture\n")
 
     (root / "00_manifest.json").write_text(
         json.dumps(
@@ -199,6 +221,39 @@ def test_a_bundle_validates_before_it_has_been_rendered(bundle: Path) -> None:
     assert report.valid, report.issues
     assert report.phase == "pre-render"
     assert any("has not been rendered" in warning for warning in report.warnings)
+
+
+@pytest.mark.parametrize("role", ["source_expression", "target_expression"])
+def test_bundle_validation_requires_archived_expression(
+    bundle: Path, role: str
+) -> None:
+    manifest_path = bundle / "00_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    entry = manifest["artifacts"][role]
+    path = bundle / entry["path"]
+    original = path.read_bytes()
+    path.write_bytes(original + b"changed,123\n")
+    assert any(
+        "sha256" in issue for issue in validate_transformation_run(bundle).issues
+    )
+    path.unlink()
+    assert not validate_transformation_run(bundle).valid
+    del manifest["artifacts"][role]
+    manifest_path.write_text(json.dumps(manifest))
+    assert any(role in issue for issue in validate_transformation_run(bundle).issues)
+
+
+def test_bundle_validation_refuses_external_reproduction_inputs(bundle: Path) -> None:
+    relative = "scripts/transformation_config.json"
+    config = json.loads((bundle / relative).read_text())
+    config["source_expression_path"] = str((bundle / "inputs/source.csv").resolve())
+    _rewrite_artifact(bundle, relative, json.dumps(config))
+    validation = validate_transformation_run(bundle)
+    assert not validation.valid
+    assert any(
+        "reproduction_config.source_expression_path" in issue
+        for issue in validation.issues
+    )
 
 
 @pytest.mark.skipif(
@@ -236,6 +291,46 @@ def test_r_renderer_writes_vector_and_raster_for_every_panel(bundle: Path) -> No
     assert "src='figures/fig01_component_scores.png'" in linked
     assert "src='figures/" not in standalone
     assert standalone.count("data:image/png;base64,") == 4
+
+
+@pytest.mark.skipif(
+    not _r_is_ready(), reason="Rscript renderer packages are not installed"
+)
+@pytest.mark.parametrize("failed_count", [1, 4])
+def test_moma_comparison_preserves_but_does_not_plot_failed_solves(
+    bundle: Path, failed_count: int
+) -> None:
+    relative = "06_validation/moma_baseline.csv"
+    rows = BASELINE.splitlines()[1:]
+    content = "target_id,moma_score,rank,status\n"
+    for index, row in enumerate(rows):
+        target_id, score, rank = row.split(",")
+        failed = index >= len(rows) - failed_count
+        content += (
+            f"{target_id},{'-inf' if failed else score},{rank},"
+            f"{'infeasible' if failed else 'optimal'}\n"
+        )
+    _rewrite_artifact(bundle, relative, content)
+
+    report = render_transformation_report(bundle)
+    manifest = json.loads(report.figure_manifest.read_text())
+    panel = next(
+        figure
+        for figure in manifest["figures"]
+        if figure["id"] == "fig03_ranking_vs_moma"
+    )
+    if failed_count == len(rows):
+        assert panel["status"] == "skipped"
+        assert "no candidate has a successful MOMA solve" in panel["reason"]
+    else:
+        assert panel["status"] == "rendered"
+        assert "Ranks for 3 candidates" in panel["caption"]
+        assert "1 unsuccessful MOMA solves" in panel["caption"]
+    html = report.report_html.read_text()
+    assert "Unsuccessful MOMA solves remain in the CSV" in html
+    assert "infeasible" in html
+    assert (bundle / relative).read_text() == content
+    assert validate_transformation_run(bundle).valid
 
 
 @pytest.mark.skipif(

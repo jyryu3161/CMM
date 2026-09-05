@@ -20,6 +20,7 @@ from dataclasses import dataclass
 import hashlib
 import html
 import json
+import math
 from pathlib import Path
 import re
 from typing import Any, Mapping, Sequence
@@ -619,6 +620,18 @@ def _compose(
             "that merely reproduces MOMA's ordering has not shown that its signal comes from "
             "the method rather than from the inputs.</p>"
         )
+        failed_baseline = [
+            row
+            for row in baseline
+            if row.get("status") not in (None, "", "optimal")
+            or not math.isfinite(float(row["moma_score"]))
+        ]
+        if failed_baseline:
+            parts.append(
+                "<p>Unsuccessful MOMA solves remain in the CSV with their status and "
+                "are excluded from the rank comparison.</p>"
+            )
+            parts.append(_table(failed_baseline, ["target_id", "status"]))
         parts.append(sources("moma_baseline"))
     else:
         parts.append(
@@ -711,6 +724,10 @@ _REQUIRED_ROLES: Mapping[str, tuple[str, ...]] = {
     "summary": (),
     "workflow_configuration": (),
     "model": (),
+    "source_expression": (),
+    "target_expression": (),
+    "reproduction_config": (),
+    "reproduce_script": (),
     "preflight": ("check", "status"),
     "source_reference_fluxes": ("reaction_id", "flux"),
     "reaction_direction_map": ("reaction_id", "direction"),
@@ -785,6 +802,7 @@ def validate_transformation_run(
         )
 
     csv_rows: dict[str, list[dict[str, Any]]] = {}
+    artifact_paths: dict[str, Path] = {}
     for role, columns in {**_REQUIRED_ROLES, **_OPTIONAL_ROLES}.items():
         entry = artifacts.get(role)
         if entry is None:
@@ -805,6 +823,7 @@ def validate_transformation_run(
             issues.append(f"artifact {role!r} is declared but missing: {entry['path']}")
             continue
         _check_integrity(role, entry, path, issues=issues, warnings=warnings)
+        artifact_paths[role] = path
         status = entry.get("status")
         if status not in {"complete", "partial"}:
             # A stage switched off writes an empty table and says so. Demanding its columns
@@ -827,6 +846,7 @@ def validate_transformation_run(
                     f"artifact {role!r} is missing required column(s): {sorted(missing)}"
                 )
 
+    _check_reproduction_inputs(artifact_paths, issues=issues)
     _check_ranking_invariants(csv_rows, issues=issues, warnings=warnings)
 
     outputs = _check_report_outputs(root, issues=issues, warnings=warnings)
@@ -847,6 +867,41 @@ def validate_transformation_run(
         if (root / "report_validation.json").is_file()
         else None,
     )
+
+
+def _check_reproduction_inputs(
+    artifact_paths: Mapping[str, Path], *, issues: list[str]
+) -> None:
+    """Both configs must refer to the archived inputs, relative to their own location."""
+
+    for role in ("workflow_configuration", "reproduction_config"):
+        path = artifact_paths.get(role)
+        if path is None:
+            continue
+        try:
+            config = _read_json(path)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            issues.append(f"{role} is not valid UTF-8 JSON: {exc}")
+            continue
+        if not isinstance(config, Mapping):
+            issues.append(f"{role} must contain a JSON object")
+            continue
+        for field, input_role in (
+            ("model_path", "model"),
+            ("source_expression_path", "source_expression"),
+            ("target_expression_path", "target_expression"),
+        ):
+            value = config.get(field)
+            if (
+                not isinstance(value, str)
+                or not value
+                or Path(value).is_absolute()
+                or (path.parent / value).resolve() != artifact_paths.get(input_role)
+            ):
+                issues.append(
+                    f"{role}.{field} must reference the manifest's {input_role} "
+                    "using a relative path; external inputs make the bundle unreproducible"
+                )
 
 
 def _check_integrity(

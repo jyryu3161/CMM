@@ -114,15 +114,24 @@ collapse_coupled_sets=None, explicit=None)`;
 
 - **Source and target are not interchangeable.** The same pair asks two different questions and
   nothing in the model can detect a swap. Confirm the direction; never infer it from filenames.
+- Both expression files must contain finite, non-negative **linear** measurements. Reference
+  inference uses linear replicate means; direction tests compare `log2(value + 1)` per
+  replicate. The transform and pseudocount are recorded in provenance.
 - **MIQP is required and has no substitute.** `rmta_continuous` is a QP heuristic and is not
   published rMTA.
 - `collapse_coupled_sets=None` follows the perturbation level — on for reactions, off for genes,
   because coupled sets are defined on reactions. Asking for them on a gene run is rejected.
+  Coupling uses the full model even when only a subset is eligible for deletion. Gene candidates
+  retain their complete blocked-reaction signatures and are screened for joint deletion growth;
+  `candidate_construction.represented_genes` preserves equivalent gene ids.
 - **`suggest_epsilon(reference_fluxes)`** returns percentiles of |v_ref| so epsilon can be
   chosen against the model at hand. It is a flux magnitude; there is no safe default.
 - Every run's provenance states that v_ref is not the published iMAT-plus-sampling state, and
   `result.summary()["candidate_construction"]` carries the count that is the denominator of any
   percentile claim.
+- Run bundles archive the original expression files under `inputs/` alongside the source model.
+  Both configs use relative input paths, so `scripts/reproduce.py` works after moving the bundle.
+  Validation requires these archived inputs and checks their recorded hashes and config paths.
 
 CLI: `cmm transformation-targets --config CONFIG`.
 
@@ -683,6 +692,9 @@ Both return a `TargetRanking`: `.sorted(descending=True)`, `.top(n)`, `.best()`,
   explicitly labeled heuristic — never report it as published rMTA).
 - `transformation_targets` methods: `"moma"` (score = reduction in distance to the target
   state, **QP**) or `"mta"` (**MIQP**). `"moma"` remains the default.
+  Failed MOMA solves retain `status` and a `-inf` sentinel score, follow all successful solves,
+  and cannot become `.best()`; that returns `None` when every solve failed. These rows remain in
+  CSV exports but are excluded from the SC-02 MOMA rank-comparison figure.
 - **Check the tie structure before quoting a top-k.** `TargetRanking.metadata` carries
   `n_distinct_scores`, `largest_tie_block` and `score_resolution` (also available from
   `cmm.features.tie_structure`), because `TargetRanking.sorted` breaks ties alphabetically on

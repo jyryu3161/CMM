@@ -62,16 +62,16 @@ output_dir <- normalizePath(args[[3]], winslash = "/", mustWork = FALSE)
 figure_manifest_path <- normalizePath(args[[4]], winslash = "/", mustWork = FALSE)
 dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 
+`%||%` <- function(left, right) {
+  if (is.null(left) || length(left) == 0L) right else left
+}
+
 manifest <- jsonlite::fromJSON(manifest_path, simplifyVector = FALSE)
 if (!identical(manifest$schema_version, 2L)) {
   stop("manifest schema_version must be 2")
 }
 if (!identical(as.character(manifest$workflow %||% ""), "transformation_target_discovery")) {
   stop("manifest is not a transformation_target_discovery run")
-}
-
-`%||%` <- function(left, right) {
-  if (is.null(left) || length(left) == 0L) right else left
 }
 
 artifact_entry <- function(role) {
@@ -450,6 +450,12 @@ render_panel(
   build = function() {
     ranking <- read_artifact_csv("transformation_ranking")
     baseline <- read_artifact_csv("moma_baseline")
+    scored <- is.finite(as.numeric(baseline$moma_score))
+    if ("status" %in% names(baseline)) {
+      scored <- scored & !is.na(baseline$status) & baseline$status == "optimal"
+    }
+    excluded <- sum(!scored)
+    baseline <- baseline[scored, , drop = FALSE]
     merged <- merge(
       data.frame(
         target_id = as.character(ranking$target_id),
@@ -465,7 +471,7 @@ render_panel(
       by = "target_id"
     )
     merged <- merged[stats::complete.cases(merged), , drop = FALSE]
-    if (nrow(merged) == 0L) stop("no candidate is ranked by both methods")
+    if (nrow(merged) == 0L) stop("no candidate has a successful MOMA solve for rank comparison")
     merged$marked <- highlight_flag(merged$target_id)
     marked <- merged[merged$marked, , drop = FALSE]
     limit <- max(merged$transformation_rank, merged$moma_rank)
@@ -493,6 +499,16 @@ render_panel(
           seed = 0L
         )
     }
+    caption <- sprintf(
+      paste(
+        "Ranks for %d candidates with successful MOMA solves; points on the diagonal",
+        "are candidates the two methods agree on.",
+        "%d unsuccessful MOMA solves are excluded from this comparison and retained in the CSV."
+      ),
+      nrow(merged), excluded
+    )
+    attr(plot, "cmm_caption") <- caption
+    attr(plot, "cmm_alt") <- caption
     plot
   }
 )

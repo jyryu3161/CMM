@@ -78,6 +78,28 @@ def branched_model() -> Model:
 
 
 @pytest.fixture
+def parallel_pathway_model() -> Model:
+    """Two independent routes; g1 also controls their common essential precursor supply."""
+
+    model = Model("parallel_pathways")
+    a, b, c = [Metabolite(f"{name}_c", compartment="c") for name in "abc"]
+    for rid, stoich, rule, lower in (
+        ("SUPPLY", {a: 1}, "", 0),
+        ("R1", {a: -1, b: 1}, "g1", 0),
+        ("R2", {b: -1, c: 1}, "g1 and g2", 0),
+        ("R3", {b: -1, c: 1}, "g3", 0),
+        ("BIOMASS", {c: -1}, "", 1),
+    ):
+        reaction = Reaction(rid)
+        reaction.add_metabolites(stoich)
+        reaction.bounds = (lower, 10)
+        reaction.gene_reaction_rule = rule
+        model.add_reactions([reaction])
+    model.objective = "BIOMASS"
+    return model
+
+
+@pytest.fixture
 def published_mta_model() -> Model:
     """Independent Python construction of the official COBRA Toolbox MTA test network."""
 

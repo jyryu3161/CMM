@@ -80,13 +80,17 @@ Checks the expression files parse, how many replicates each state has, what frac
 model's genes the data covers, that the model grows under the requested condition, and that
 the solver can run MIQP.
 
+Both expression files must contain finite, non-negative linear measurements. Log-transformed
+values are not the workflow input format.
+
 **The MIQP gate is a stop.** `rmta_continuous` is a QP heuristic and explicitly not published
 rMTA; it must never stand in for a method the solver cannot run. Report the method as
 unavailable instead.
 
 ### 2 — Reference state (v_ref)
 
-The source expression becomes a flux distribution through **E-Flux2** or **LAD**.
+The source expression's linear replicate means become a flux distribution through **E-Flux2**
+or **LAD**.
 
 Everything downstream is measured against v_ref: the sign flip that puts expression labels
 into flux-value space, the MIQP's success thresholds `v_ref ± ε`, and the denominator of the
@@ -104,6 +108,10 @@ default.
 Compares the two states gene by gene, resolves the result through each reaction's GPR (AND
 requires all subunits, OR at least one, mixed evidence yields unchanged), and converts it to a
 desired direction of flux change using the sign of v_ref.
+
+Each replicate is transformed with `log2(value + 1)` before the comparison. Fold-change
+thresholds therefore apply in log2 space; the source reference still uses linear values.
+The transform and pseudocount are recorded in provenance.
 
 **With replicates, use the t-test.** That is what the paper specifies, and CMM implements it
 as `gene_directions_from_replicates`. Fall back to a fold-change cut only when the data has
@@ -124,12 +132,18 @@ counting them separately inflates the denominator.
 
 Coupled sets are defined on reactions and therefore apply to a reaction-level run. A
 gene-level run deduplicates genes that block the same reaction signature, as SC-01's
-single-knockout screen already does.
+single-knockout screen already does. Signatures include every reaction blocked by the gene,
+including reactions excluded as individual candidates. Essentiality is tested for the full
+gene deletion, including joint loss of otherwise nonessential pathways. The construction
+metadata preserves all equivalent gene ids under `represented_genes`.
 
 > CMM computes **full** coupling from the null space of S, not the paper's **partial**
 > coupling, which needs O(*n*²) linear programmes. Full coupling is stronger, so the grouping
 > is conservative — it can split one of the paper's sets but never merge two, which means the
 > candidate count it yields is an upper bound on theirs.
+
+The null space always uses the full model. Filtering knockout candidates does not remove
+those reactions from the network used to determine coupling.
 
 ### 5 — Transformation search
 
@@ -147,6 +161,10 @@ taken inside a tie block is alphabetical rather than meaningful. The ranking's m
 inferior*; reproducing that contrast is what shows a ranking's signal comes from the method
 rather than from the inputs. A ranking whose MOMA baseline agrees with it has not demonstrated
 that, whatever its top candidate.
+
+Unsuccessful MOMA solves remain in the baseline CSV with their solver `status` and a `-inf`
+sentinel score, after all successful solves. They are listed in the report and excluded from
+the rank-comparison figure; an infeasible deletion is a recorded outcome, not a valid score.
 
 **Epsilon sensitivity, when configured.** ε is a flux magnitude with no derivable value here,
 so reporting how the ranking moves across ε is the honest substitute for the paper's
@@ -183,6 +201,12 @@ with respect to the figures beside it. Each of those looks like success in a bro
 checks every declared artifact against its recorded hash and size, that the ranking is ordered
 1..N by descending score, that a skipped stage records why, that every rendered figure has a
 non-empty PNG, SVG and PDF, and that the standalone page carries every image it references.
+
+The bundle includes byte-for-byte copies of both expression inputs under `inputs/` and the
+source model under `model/`. Both `00_config.json` and `scripts/transformation_config.json`
+refer to these files with relative paths. The gate checks input hashes and these references;
+`scripts/reproduce.py` can therefore replay a moved bundle without the original external
+files. Older bundles missing these inputs must be regenerated before they pass this gate.
 
 `cmm report render` and `cmm report validate` read the run's own `00_manifest.json` to decide
 which workflow it belongs to, so neither needs to be told.

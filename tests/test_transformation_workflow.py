@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -16,6 +17,7 @@ from cmm.workflows.transformation import (
     TransformationValidationConfig,
     TransformationWorkflowConfig,
     TransformationWorkflowError,
+    _build_candidates,
     _gene_directions,
     _read_expression,
     run_transformation_target_discovery,
@@ -302,6 +304,188 @@ def test_disjoint_gene_identifiers_are_a_stop_not_a_silent_empty_result():
     target = pd.DataFrame(np.ones((2, 3)), index=["x", "y"])
     with pytest.raises(TransformationWorkflowError, match="share no gene ids"):
         _gene_directions(source, target, DirectionConfig())
+
+
+def test_linear_fold_change_is_a_ratio_not_a_difference():
+    source = pd.DataFrame(
+        {"measurement": [100.0, 0.0, 3.0]}, index=["small", "on", "off"]
+    )
+    target = pd.DataFrame({"measurement": [102.0, 3.0, 0.0]}, index=source.index)
+    config = DirectionConfig(significance="fold_change", ranking="fold_change")
+    evidence = _gene_directions(source, target, config)
+    assert evidence.loc["small", "log2_fold_change"] == pytest.approx(
+        np.log2(103 / 101)
+    )
+    assert evidence["direction"].to_dict() == {"small": 0, "on": 1, "off": -1}
+    assert evidence.loc["on", "log2_fold_change"] == 2
+    assert evidence.loc["off", "log2_fold_change"] == -2
+    assert source.loc["small", "measurement"] == 100.0
+
+
+def test_ttest_uses_log2_of_each_linear_replicate():
+    from cmm.omics.differential import gene_directions_from_replicates
+
+    source = pd.DataFrame([[1.0, 5.0, 20.0]], index=["g1"])
+    target = pd.DataFrame([[2.0, 40.0, 120.0]], index=["g1"])
+    expected = gene_directions_from_replicates(np.log2(source + 1), np.log2(target + 1))
+    pd.testing.assert_frame_equal(
+        _gene_directions(source, target, DirectionConfig()), expected
+    )
+
+
+@pytest.mark.parametrize("value", [-1.0, float("inf"), float("-inf")])
+def test_expression_inputs_require_finite_linear_measurements(tmp_path, value):
+    path = tmp_path / "expression.csv"
+    pd.DataFrame({"measurement": [value]}, index=["g1"]).to_csv(path)
+    with pytest.raises(TransformationWorkflowError, match="non-negative linear"):
+        _read_expression(path)
+
+
+def test_candidate_filters_preserve_distinct_reaction_and_gene_effects(
+    parallel_pathway_model,
+):
+    model = parallel_pathway_model
+    reaction_candidates, _ = _build_candidates(model, _config(perturbation="reaction"))
+    assert reaction_candidates == ("R2", "R3")
+    gene_candidates, record = _build_candidates(model, _config())
+    assert gene_candidates == ("g2", "g3")
+    assert record["n_genes_essential_removed"] == 1
+    assert model.slim_optimize() == pytest.approx(10)
+    assert model.reactions.BIOMASS.lower_bound == 1
+
+    unfiltered, _ = _build_candidates(
+        model, _config(candidates=CandidateConfig(exclude_essential=False))
+    )
+    assert unfiltered == ("g1", "g2", "g3")
+
+
+def test_gene_essentiality_checks_joint_deletion_of_nonessential_reactions(
+    parallel_pathway_model,
+):
+    model = parallel_pathway_model
+    model.reactions.R2.gene_reaction_rule = "g2 and joint"
+    model.reactions.R3.gene_reaction_rule = "g3 and joint"
+    candidates, record = _build_candidates(model, _config())
+    assert candidates == ("g2", "g3")
+    assert record["n_genes_essential_removed"] == 2
+    assert model.slim_optimize() == pytest.approx(10)
+
+
+@pytest.fixture
+def small_transformation_config(tmp_path, parallel_pathway_model):
+    model_path = tmp_path / "model.xml"
+    write_sbml_model(parallel_pathway_model, str(model_path))
+    # Identical basenames must not cause the archived source and target to overwrite each other.
+    paths = []
+    for state, value in (("source", 100.0), ("target", 1.0)):
+        directory = tmp_path / state
+        directory.mkdir()
+        path = directory / "expression.tsv"
+        pd.DataFrame({"measurement": [value] * 3}, index=["g1", "g2", "g3"]).to_csv(
+            path, sep="\t"
+        )
+        paths.append(path)
+    return _config(
+        model_path=model_path,
+        source_expression_path=paths[0],
+        target_expression_path=paths[1],
+        output_dir=tmp_path / "run",
+        epsilon=0.01,
+        candidates=CandidateConfig(explicit=("g2",)),
+        direction=DirectionConfig(
+            significance="fold_change", ranking="fold_change", top_n_changed=None
+        ),
+        validation=TransformationValidationConfig(enabled=False),
+    )
+
+
+@pytest.mark.requires_miqp
+def test_workflow_does_not_promote_a_two_percent_linear_change(
+    small_transformation_config,
+):
+    config = small_transformation_config
+    pd.DataFrame({"measurement": [102.0] * 3}, index=["g1", "g2", "g3"]).to_csv(
+        config.target_expression_path, sep="\t"
+    )
+    with pytest.raises(
+        TransformationWorkflowError, match="no reaction was labelled as changed"
+    ):
+        run_transformation_target_discovery(config)
+
+
+@pytest.mark.requires_miqp
+def test_bundle_replays_after_relocation_without_original_inputs(
+    small_transformation_config, tmp_path
+):
+    import shutil
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from cmm.reporting import validate_transformation_run
+
+    config = small_transformation_config
+    result = run_transformation_target_discovery(config)
+    root = result.run_directory
+    manifest = json.loads((root / "00_manifest.json").read_text())
+    for role, source in (
+        ("model", config.model_path),
+        ("source_expression", config.source_expression_path),
+        ("target_expression", config.target_expression_path),
+    ):
+        assert (
+            root / manifest["artifacts"][role]["path"]
+        ).read_bytes() == source.read_bytes()
+        source.unlink()
+
+    relocated = tmp_path / "relocated"
+    shutil.move(root, relocated)
+    assert validate_transformation_run(relocated).valid
+    reproduced = tmp_path / "reproduced"
+    process = subprocess.run(
+        [
+            sys.executable,
+            str(relocated / "scripts/reproduce.py"),
+            "--output-dir",
+            str(reproduced),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert process.returncode == 0, process.stderr
+    assert validate_transformation_run(reproduced).valid
+    ranking_path = "05_transformation/transformation_ranking.csv"
+    assert (reproduced / ranking_path).read_bytes() == (
+        relocated / ranking_path
+    ).read_bytes()
+
+    # A rerun whose inputs are its own archived copies must read them before overwrite cleanup.
+    archived = TransformationWorkflowConfig.from_json(relocated / "00_config.json")
+    before = {
+        field: Path(getattr(archived, field)).read_bytes()
+        for field in ("model_path", "source_expression_path", "target_expression_path")
+    }
+    run_transformation_target_discovery(replace(archived, overwrite=True))
+    for field, data in before.items():
+        assert Path(getattr(archived, field)).read_bytes() == data
+    assert validate_transformation_run(relocated).valid
+
+
+@pytest.mark.requires_miqp
+def test_workflow_baseline_preserves_failed_moma_status(small_transformation_config):
+    config = replace(
+        small_transformation_config,
+        candidates=CandidateConfig(explicit=("g1", "g2")),
+        validation=TransformationValidationConfig(),
+    )
+    result = run_transformation_target_discovery(config)
+    baseline = pd.read_csv(
+        result.run_directory / "06_validation/moma_baseline.csv"
+    ).set_index("target_id")
+    assert baseline.loc["g1", "status"] == "infeasible"
+    assert baseline.loc["g1", "moma_score"] == float("-inf")
+    assert baseline.loc["g2", "status"] == "optimal"
 
 
 @pytest.mark.requires_miqp
