@@ -1,8 +1,9 @@
 # AI-assisted use and disclosure
 
 CMM's numerical Python API and CLI do not require an AI agent. The repository's
-`cmm-production-engineering` skill is an optional source-checkout interface that helps an agent
-resolve a run definition and invoke the same canonical workflow. Numerical provenance and agent
+`cmm-production-engineering` and `cmm-transformation-engineering` skills are optional
+source-checkout interfaces that help an agent resolve a run definition and invoke the
+corresponding canonical workflow. Numerical provenance and agent
 provenance therefore answer different questions and must not be conflated.
 
 ## What to record

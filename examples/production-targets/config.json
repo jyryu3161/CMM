@@ -1,0 +1,42 @@
+{
+  "model_path": "data/e_coli_core.xml",
+  "product": "EX_succ_e",
+  "substrate": "EX_glc__D_e",
+  "biomass": "Biomass_Ecoli_core",
+  "output_dir": "../../results/example-production-succinate",
+  "solver": "gurobi",
+  "medium": "glucose_anaerobic",
+  "condition": {
+    "name": "glucose_anaerobic",
+    "bounds": [
+      {"reaction_id": "EX_glc__D_e", "lower_bound": -10.0, "upper_bound": 1000.0},
+      {"reaction_id": "EX_o2_e", "lower_bound": 0.0, "upper_bound": 1000.0},
+      {"reaction_id": "EX_co2_e", "lower_bound": 0.0, "upper_bound": 1000.0}
+    ],
+    "notes": "Textbook demonstration: glucose uptake 10 mmol gDW^-1 h^-1; oxygen and CO2 uptake closed; mineral medium from the glucose_anaerobic preset."
+  },
+  "strain_design_seed": 0,
+  "top_single_knockouts_per_method": 5,
+  "top_amplification_targets_per_method": 10,
+  "max_knockouts": 3,
+  "fseof_steps": 10,
+  "fvseof_steps": 10,
+  "amplification_loop_diagnostic_top_n": 20,
+  "validation": {
+    "enabled": true,
+    "max_flux_response_targets": 30,
+    "flux_response_steps": 20,
+    "flux_response_biomass_fraction": 0.3,
+    "sampling_growth_fraction": 0.1,
+    "sampling": {
+      "enabled": true,
+      "n": 1000,
+      "method": "achr",
+      "thinning": 100,
+      "processes": 1,
+      "seed": 0,
+      "store_raw_samples": true
+    }
+  },
+  "overwrite": false
+}

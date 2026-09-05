@@ -30,7 +30,7 @@ use the versioned source tables and validation artifacts for the study instead.
 | `02_fba.png` | FBA — objective 10 (optimal), flux table populated |
 | `03_fva.png` | FVA at fraction 0.9 — flux ranges per reaction |
 | `04_flux_range_slider.png` | Flux-range filter at 50% — high-flux reactions highlighted |
-| `05_revert_rmta.png` | Revert (rMTA, gene KO, QP) ranking view |
+| `05_revert_rmta.png` | Revert (published rMTA, gene KO, MIQP) ranking view |
 | `06_revert_mta_miqp.png` | Revert (original-MTA MIQP) ranking view |
 
 Both revert methods agree: knocking out the disease-branch gene `g2` (reaction `R2`) is the top

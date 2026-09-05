@@ -31,11 +31,14 @@ uptake, oxygen bounds, solver, search limits, the strain-design seed, and sampli
 complete run is:
 
 ```bash
-uv run cmm production-targets --config workflows/product.json
-uv run cmm report validate results/product_run --json
+uv run --frozen --all-extras python examples/production-targets/prepare.py
+uv run --frozen --all-extras cmm production-targets --config examples/production-targets/config.json
+uv run --frozen --all-extras cmm report validate results/example-production-succinate --json
 ```
 
-The first command performs preflight, numerical analysis, publication rendering, and final
+This [checked-in succinate example](examples/production-targets/README.md) first saves the
+existing COBRApy textbook model. The `production-targets` command then performs preflight,
+numerical analysis, publication rendering, and final
 validation. Use `--analysis-only` to separate the solver run from R rendering. A run is not
 complete until validation succeeds; unavailable methods and infeasible solutions remain
 visible rather than being silently omitted.
@@ -44,8 +47,40 @@ See [Building or customizing a CMM workflow](docs/building-custom-workflows.md) 
 generic config, the equivalent Python API, and the boundary between a downstream study and an
 installed workflow. Contributors can follow the separate
 [canonical-workflow tutorial](docs/tutorials/adding-a-canonical-workflow.md). The scientific
-sequence of the sole shipped workflow is specified in
+sequence of the production workflow is specified in
 [SC-01 production target discovery](docs/scenarios/SC-01-production-target-discovery.md).
+
+## Reproducible transformation workflow (MTA/rMTA)
+
+The second canonical workflow ranks gene or reaction knockouts that move a **source**
+metabolic state toward a **target** state. It uses published MTA or rMTA, reports the MOMA
+baseline, and can repeat the ranking over an explicit epsilon sensitivity grid.
+
+```bash
+uv run --frozen --all-extras python examples/transformation-targets/prepare.py
+uv run --frozen --all-extras cmm transformation-targets --config examples/transformation-targets/config.json
+uv run --frozen --all-extras cmm report validate results/example-transformation-mta --json
+```
+
+This [checked-in MTA/rMTA example](examples/transformation-targets/README.md) exports CMM's
+existing synthetic disease → healthy fixture. It also explains how to provide Recon inputs;
+the historical Recon1 timing below has no bundled input pair or run config. Both runnable
+workflows are indexed in [examples](examples/README.md).
+
+For a new study, set the exact model, source/target expression files, condition and epsilon.
+Expression inputs are finite, non-negative **linear**
+measurements: reference inference uses linear replicate means, while direction tests compare
+`log2(value + 1)` per replicate. Use the t-test for replicated measurements and explicitly
+select fold-change thresholds for single measurements. Confirm source → target before running.
+
+Both methods require an MIQP-capable Gurobi or CPLEX installation. The default reference is
+E-Flux2, not the original paper's iMAT-plus-sampling reference, and epsilon must be chosen for
+the data; these departures are recorded in the report. See the
+[SC-02 contract](docs/scenarios/SC-02-transformation-target-discovery.md) and
+[config/API reference](docs/agent-reference.md#complete-transformation-workflow--cmmworkflowstransformation).
+The command writes raw tables, archives both expression inputs, renders R figures and both
+HTML reports, and validates the bundle. `--analysis-only` omits R rendering;
+`scripts/reproduce.py` replays the archived inputs after moving the run directory.
 
 ## Availability and implementation
 
@@ -106,6 +141,10 @@ Zenodo or an equivalent long-term repository and its DOI added to this section,
   remain ineligible for support/recommendation; non-runnable or failed analyses remain visible
   with status and reason rather than shortening those candidate sets. The workflow is available
   through `cmm production-targets --config CONFIG` and the Python API.
+- Transformation workflow: `cmm transformation-targets --config CONFIG` composes expression
+  integration, direction testing, candidate construction, MTA/rMTA ranking, MOMA comparison,
+  optional epsilon sensitivity, archived-input replay, R reporting and validation. Its Python
+  boundary is `cmm.workflows.transformation.run_transformation_target_discovery`.
 - Publication reporting: the concrete `publication_reporting` service validates
   manifest-declared source tables and renders deterministic English HTML plus 300-DPI PNG and editable
   PDF/SVG figures through R. Generic scenario-template and scenario-file-format engines remain
@@ -273,8 +312,9 @@ fewer** — and fewer still for L2 MOMA, which adds one variable per reaction: *
 neither genome-scale nor mixed-integer. Genome-scale work of any kind, including plain FBA on
 iJO1366 (5166 variables), requires a full academic or commercial license.
 
-The `rmta_continuous` QP row above is **unverified**: the test suite has no test that solves its
-QP, only a GLPK capability-gate test. See [Known limits](docs/VALIDATION.md).
+The `rmta_continuous` QP path is exercised on a small deterministic network and explicitly
+labels its CSV as a continuous heuristic. It is not published rMTA. See
+[Known limits](docs/VALIDATION.md#known-limits).
 
 ### Expect MTA/rMTA on a genome-scale model to take hours
 
@@ -350,6 +390,22 @@ the official COBRA Toolbox MTA test topology, E-Flux2's independent two-stage QP
 sensitivity checks, offscreen GUI workflows, static analysis, coverage, and distribution
 build verification.
 
+For focused offscreen and workflow checks with the same locked dependencies:
+
+```bash
+QT_QPA_PLATFORM=offscreen uv run --frozen --all-extras pytest -q -ra \
+  tests/test_app_smoke.py tests/test_scenarios.py
+uv run --frozen --all-extras pytest -q -ra \
+  tests/test_agent_contract.py tests/test_production_workflow.py \
+  tests/test_transformation_workflow.py tests/test_publication_reporting.py \
+  tests/test_transformation_reporting.py
+```
+
+These tests include numerical checks, orchestration fixtures, and report validation. To keep
+the actual GUI captures, run the three commands in the
+[scenario-figure manifest](docs/scenario-figures.md). Solver-specific tests require the listed
+capabilities and a sufficient license; report tests require the R environment described above.
+
 ```bash
 uv sync --frozen --all-extras
 QT_QPA_PLATFORM=offscreen uv run pytest -q -ra --strict-markers \
@@ -391,12 +447,18 @@ For driving CMM from a repository-aware AI coding tool:
 - [Metabolic-engineering scenarios](docs/scenarios/README.md) — step-by-step pipelines
 - [Function reference for agents](docs/agent-reference.md) — signatures and result objects
 
-The production skill under `.agents/skills/cmm-production-engineering/` is a tested
-Codex/OpenAI-compatible repository skill. Skill auto-discovery is host-dependent and is not
+Two tested Codex/OpenAI-compatible repository skills route requests to the corresponding CLI:
+
+| Goal | Repository skill | Public command |
+|---|---|---|
+| Production / knockout / amplification targets | [cmm-production-engineering](.agents/skills/cmm-production-engineering/SKILL.md) | `cmm production-targets` |
+| Move a source state toward a target with MTA/rMTA | [cmm-transformation-engineering](.agents/skills/cmm-transformation-engineering/SKILL.md) | `cmm transformation-targets` |
+
+Skill auto-discovery is host-dependent and is not
 claimed for other agent hosts; they can still follow `AGENTS.md`, the scenarios, and the public
-API directly. The skill ships in the GitHub/source checkout and sdist, but it is not a Python
-runtime dependency or an installed-wheel feature. Installing the wheel alone provides the
-workflow API and CLI, not the repository-level skill.
+API directly. Both skills ship in the GitHub/source checkout and sdist, but are not Python
+runtime dependencies or installed-wheel features. Installing the wheel alone provides the
+workflow APIs and CLI, not the repository-level skills.
 
 The documentation and agent contract are reproducibility/source materials rather than numerical
 runtime dependencies. They ship in the sdist; the wheel contains the installed Python runtime,
@@ -431,8 +493,8 @@ Three points that are easy to get wrong, all detailed there:
 
 ## Release process
 
-Every push and pull request installs the frozen lockfile and runs the cross-platform quality
-gates. A tag must exactly match `pyproject.toml`; the release workflow reruns all checks,
+Every push to `main` and every pull request installs the frozen lockfile and runs the
+cross-platform quality gates. A tag must exactly match `pyproject.toml`; the release workflow reruns all checks,
 builds the wheel and sdist, validates them, installs the wheel in a clean environment, and
 then attaches the artifacts to a GitHub Release.
 

@@ -8,7 +8,7 @@ work, but it is neither an installed workflow command nor a validated run schema
 
 This guide separates two legitimate extension paths:
 
-- **Track A — downstream use:** configure SC-01 or compose a private reproducible study from
+- **Track A — downstream use:** configure SC-01 or SC-02, or compose a private reproducible study from
   public CMM services without changing CMM itself.
 - **Track B — upstream contribution:** add a new canonical workflow, schema, reporter,
   validator, CLI boundary, documentation, and tests to CMM.
@@ -23,10 +23,10 @@ There are three ways to use CMM. Choose by scientific scope, not by preferred in
 | Need | Boundary | Reproducible output |
 |---|---|---|
 | Complete production-target study | `ProductionWorkflowConfig` and `run_production_target_discovery` | Canonical schema-v2 run, R report, validator |
-| Which knockout moves one metabolic state toward another | `TransformationWorkflowConfig` and `run_transformation_target_discovery` | Canonical schema-v2 run, Python report |
+| Which knockout moves one metabolic state toward another | `TransformationWorkflowConfig` and `run_transformation_target_discovery` | Canonical schema-v2 run, R report, validator |
 | Same study with different thresholds, candidate counts, search seed, or sampling settings | Change the canonical config | Same canonical schema and validation contract |
 | A different scientific question or a single analysis | Track A: compose documented functions in `cmm.core`, `cmm.features`, or `cmm.omics` | A downstream study with its own declared outputs |
-| A second reusable, installed CMM workflow | Track B: contribute a workflow-specific API, schema, reporter, validator, CLI, and tests | A separately versioned canonical run contract |
+| Another reusable, installed CMM workflow | Track B: contribute a workflow-specific API, schema, reporter, validator, CLI, and tests | A separately versioned canonical run contract |
 
 Do not create a second SC-01 implementation just to change parameters. The existing production
 workflow already exposes stage switches, method limits, the number of method-specific FSEOF and
@@ -198,6 +198,48 @@ signatures are simulated once, with all represented gene ids retained as candida
 provenance. Every candidate also remains in the response and sampling indexes if its analysis
 is infeasible, unavailable, skipped, or failed.
 
+### Customize the transformation workflow (SC-02)
+
+For source → target studies, use `TransformationWorkflowConfig` from
+`cmm.workflows.transformation` and the `cmm transformation-targets` command. A completed run's
+`00_config.json` records the full configuration; `scripts/transformation_config.json` is its
+replay configuration. When copying either file into a new study directory, update its relative
+paths because they resolve from that file's directory.
+
+Start with the [runnable MTA/rMTA example](../examples/transformation-targets/README.md), which
+also lists the inputs needed to adapt it to Recon. The
+[succinate example](../examples/production-targets/README.md) provides the matching SC-01 entry
+point; neither requires copying numerical workflow code.
+
+1. Set `model_path`, `source_expression_path`, `target_expression_path` and a new `output_dir`.
+   Confirm which state to move away from and toward; this cannot be inferred from the model.
+2. Set the medium and condition, including substrate and oxygen bounds, for that exact model.
+   Inspect exchange ids and verify growth; a Recon1 condition cannot be transferred unchanged
+   to another Recon release with different ids or reactions.
+3. Provide finite, non-negative linear expression with matching model gene ids, one row per
+   gene and one column per replicate. Keep the original measurements: SC-02 performs the
+   `log2(value + 1)` comparison itself. For replicated data use `direction.significance="ttest"`;
+   single measurements require an explicit fold-change configuration and disclosure.
+4. Choose `method` (`mta` or `rmta`), `perturbation`, the reference method, `epsilon`, the
+   changed-reaction cutoff, and any `validation.epsilon_sweep`. Epsilon is a flux magnitude;
+   do not inherit it from a different model without checking the reference flux scale.
+5. Run the same public boundary and completion gate:
+
+   ```bash
+   uv run --frozen --all-extras cmm transformation-targets --config studies/my-transformation.json
+   uv run --frozen --all-extras cmm report validate results/my-transformation --json
+   ```
+
+The workflow archives the model and both expression files, constructs candidates, ranks them,
+compares the MOMA baseline, and writes R figures plus both HTML reports. Preserve explicit
+failure/status rows and tie warnings. A new dataset or condition is a new **configuration** of
+SC-02; it does not need copied solver code or a third installed workflow. A different scientific
+question that needs its own analyses and artifact contract belongs in Track B below.
+
+See the [SC-02 contract](scenarios/SC-02-transformation-target-discovery.md) and
+[public signatures](agent-reference.md#complete-transformation-workflow--cmmworkflowstransformation)
+for the complete fields and their meanings.
+
 ## 4. Understand what the canonical run owns
 
 The production workflow writes the exact source and conditioned models, resolved config,
@@ -233,7 +275,7 @@ CMM version or commit, and the raw tables used by the manuscript.
 
 ## 5. Track A2 — compose a downstream study from public services
 
-When the question is outside SC-01, compose the documented public services and keep their typed
+When the question is outside both canonical workflows, compose the documented public services and keep their typed
 results intact. This small example asks whether one FSEOF hypothesis has a supportive
 target-to-product response. It is a narrow in-memory study, **not** an installed CMM workflow,
 CLI command, artifact schema, or report contract.

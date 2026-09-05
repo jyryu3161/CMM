@@ -10,7 +10,7 @@ CMM source code, documentation, and test data are freely available under the MIT
 the exact tagged release in Zenodo or an equivalent long-term repository and add its DOI to
 the README, `CITATION.cff`, and manuscript Availability and Implementation statement.
 
-The optional repository skill is an interface to the same numerical workflow, not a source of
+The two optional repository skills are interfaces to the same numerical workflows, not sources of
 solver evidence. When AI assistance materially affects development, analysis, interpretation,
 or manuscript preparation, record and disclose it separately as described in
 [`AI-USAGE.md`](AI-USAGE.md).
@@ -47,12 +47,18 @@ The general Python matrix executes the locked solver-neutral/GLPK environment on
 marked `requires_qp` or `requires_miqp`; a separate Linux 3.12 job installs Gurobi plus the
 desktop dependencies and runs that complete marked universe with offscreen Qt. It also runs the
 exact unmarked MILP node that solves both OptKnock and RobustKnock and checks deterministic seed
-forwarding. The current audited solver collection therefore contains 60 marked tests plus that
+forwarding. The current audited solver collection therefore contains 73 marked tests plus that
 one explicit MILP test, with no exception. A collection/JUnit identity guard fails if an audited
 node is omitted, skipped, duplicated, or replaced without review.
 
+The solver job also restores locked R because the SC-02 tests render and validate real MIQP
+run bundles. Those workflow-contract tests use the six-reaction branched model, keeping both
+MIQP and MOMA within the restricted license's 200-variable quadratic limit. Genome-scale
+numerical checks remain separate from these orchestration and report tests.
+
 A separate publication-report matrix restores `renv.lock`, prints and checks every locked
-package version, and runs `test_publication_reporting.py` on Ubuntu, macOS, and Windows. The
+package version, and runs `test_publication_reporting.py` and `test_transformation_reporting.py`
+on Ubuntu, macOS, and Windows. The
 lock records R 4.3.2, so archived package versions may compile when a matching binary is
 unavailable: Linux and macOS jobs install the graphics build libraries, and the Windows job
 provisions matching Rtools43. `ggplot2` itself declares `NeedsCompilation: no`; the relevant

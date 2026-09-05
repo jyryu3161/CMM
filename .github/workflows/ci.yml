@@ -64,8 +64,8 @@ jobs:
       - name: Lint (ruff)
         if: runner.os == 'Linux' && matrix.python-version == '3.12'
         run: |
-          uv run --no-sync ruff check src tests
-          uv run --no-sync ruff format --check src tests
+          uv run --no-sync ruff check src tests examples
+          uv run --no-sync ruff format --check src tests examples
 
       - name: Type check scientific services
         if: runner.os == 'Linux' && matrix.python-version == '3.12'
@@ -150,6 +150,14 @@ jobs:
               ".agents/skills/cmm-transformation-engineering/agents/openai.yaml",
               ".agents/skills/cmm-transformation-engineering/references/clarification-interview.md",
               "docs/AI-USAGE.md",
+              "examples/README.md",
+              "examples/production-targets/README.md",
+              "examples/production-targets/prepare.py",
+              "examples/production-targets/config.json",
+              "examples/transformation-targets/README.md",
+              "examples/transformation-targets/prepare.py",
+              "examples/transformation-targets/config.json",
+              "examples/transformation-targets/rmta.json",
           }
           with tarfile.open(sdists[0], mode="r:gz") as archive:
               members = [member for member in archive.getmembers() if member.isfile()]
@@ -166,6 +174,7 @@ jobs:
                   if name == "docs/analysis-2026-06-12.md"
                   or name == "docs/loop"
                   or name.startswith("docs/loop/")
+                  or (name.startswith("examples/") and "/data/" in name)
               )
               if forbidden_paths:
                   raise SystemExit(f"sdist contains internal review artifacts: {forbidden_paths}")
@@ -225,6 +234,32 @@ jobs:
           --extra desktop --extra dev --extra design --extra solver-gurobi
           --python 3.12
 
+      # SC-02's complete MIQP tests also render and validate their real run bundles.
+      # Keep their R dependency available in this required, no-skip test partition.
+      - uses: r-lib/actions/setup-r@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
+        with:
+          r-version: renv
+          use-public-rspm: always
+
+      - name: Install R graphics system libraries for solver workflow tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libfontconfig1-dev libfreetype-dev libharfbuzz-dev libfribidi-dev \
+            libpng-dev libtiff-dev libjpeg-dev libwebp-dev pkg-config
+
+      - name: Restore locked R for solver workflow tests
+        uses: r-lib/actions/setup-renv@d3c5be51b12e724e68f33216ca3c148b66d5f0b6 # v2
+
+      - name: Expose restored R to solver workflow subprocesses
+        shell: Rscript {0}
+        run: |
+          renv::load()
+          cat(
+            "R_LIBS_USER=", normalizePath(.libPaths()[[1]], winslash = "/"), "\n",
+            sep = "", file = Sys.getenv("GITHUB_ENV"), append = TRUE
+          )
+
       - name: Prove restricted solver smoke tests use six-reaction models
         run: |
           uv run --no-sync python - <<'PY'
@@ -237,6 +272,7 @@ jobs:
                   "test_moma_l2_distance_is_the_root_of_the_qp_objective",
               },
               "tests/test_validation.py": {"test_moma_matches_cobra"},
+              "tests/test_transformation_workflow.py": {"transformation_inputs"},
           }
           def module_functions(filename):
               module = ast.parse(Path(filename).read_text(encoding="utf-8"))
@@ -332,7 +368,7 @@ jobs:
               for line in milp_collection.read_text(encoding="utf-8").splitlines()
               if line.startswith("tests/") and "::" in line
           }
-          expected_marked_count = 60
+          expected_marked_count = 73
           expected_milp = {
               "tests/test_strain_design.py::"
               "test_restricted_license_strain_design_forwards_seed"

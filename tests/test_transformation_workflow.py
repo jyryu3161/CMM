@@ -246,17 +246,21 @@ def _write_expression(path, genes, values, columns=("r1", "r2", "r3")):
 
 
 @pytest.fixture
-def transformation_inputs(tmp_path, ecoli_core):
-    """A model plus a source/target pair whose difference is confined to known genes."""
+def transformation_inputs(tmp_path, branched_model):
+    """Real six-reaction solves fit the restricted CI license, including MOMA and MIQP."""
 
     model_path = tmp_path / "model.xml"
-    write_sbml_model(ecoli_core, str(model_path))
-    genes = [gene.id for gene in ecoli_core.genes]
+    write_sbml_model(branched_model, str(model_path))
+    genes = [gene.id for gene in branched_model.genes]
     rng = np.random.default_rng(0)
-    source = rng.normal(8.0, 0.2, (len(genes), 3))
+    levels = {"g1": 50.0, "g2": 100.0, "g3": 1.0, "g5": 1.0, "gb": 50.0}
+    source = np.array([levels[gene] for gene in genes])[:, None] * rng.uniform(
+        0.95, 1.05, (len(genes), 3)
+    )
     target = source.copy()
-    target[:15] -= 3.0  # a clear, reproducible down-shift on the first fifteen genes
-    target += rng.normal(0.0, 0.05, target.shape)
+    target[genes.index("g2")] *= 0.01
+    target[genes.index("g3")] *= 100.0
+    target[genes.index("g5")] *= 100.0
     _write_expression(tmp_path / "source.csv", genes, source)
     _write_expression(tmp_path / "target.csv", genes, target)
     return model_path, tmp_path / "source.csv", tmp_path / "target.csv"
@@ -565,11 +569,11 @@ def test_explicit_candidates_skip_construction(tmp_path, transformation_inputs):
         perturbation="reaction",
         epsilon=0.01,
         direction=DirectionConfig(top_n_changed=20),
-        candidates=CandidateConfig(explicit=("PGI", "PFK", "TPI")),
+        candidates=CandidateConfig(explicit=("R2", "R3", "R5")),
         validation=TransformationValidationConfig(enabled=False),
     )
     result = run_transformation_target_discovery(config)
-    assert set(result.candidates) == {"PGI", "PFK", "TPI"}
+    assert set(result.candidates) == {"R2", "R3", "R5"}
     assert result.candidate_filtering["source"] == "explicit"
 
 
@@ -585,7 +589,7 @@ def test_refusing_to_overwrite_a_non_empty_directory(tmp_path, transformation_in
         target_expression_path=target,
         output_dir=output,
         perturbation="reaction",
-        candidates=CandidateConfig(explicit=("PGI",)),
+        candidates=CandidateConfig(explicit=("R2",)),
         validation=TransformationValidationConfig(enabled=False),
     )
     with pytest.raises(FileExistsError, match="not empty"):
@@ -616,11 +620,11 @@ def test_report_renders_figures_and_states_what_it_must(
         perturbation="reaction",
         epsilon=0.01,
         direction=DirectionConfig(top_n_changed=20),
-        candidates=CandidateConfig(explicit=("PGI", "PFK", "TPI", "ENO", "GAPD")),
+        candidates=CandidateConfig(explicit=("R2", "R3", "R5")),
         validation=TransformationValidationConfig(epsilon_sweep=(0.001,)),
     )
     result = run_transformation_target_discovery(config)
-    report = render_transformation_report(result.run_directory, highlight="PGI")
+    report = render_transformation_report(result.run_directory, highlight="R2")
 
     assert report.report_html.is_file()
     names = {path.name for path in report.figures}
@@ -653,7 +657,7 @@ def test_report_renders_figures_and_states_what_it_must(
     assert "chosen, not derived" in page  # epsilon
     assert "in silico" in page
     assert "Yizhak" in page and "Valc" in page  # both methods cited
-    assert "PGI" in page
+    assert "R2" in page
 
 
 @pytest.mark.requires_miqp
@@ -671,7 +675,7 @@ def test_mta_run_does_not_publish_three_copies_of_one_score(
         perturbation="reaction",
         epsilon=0.01,
         direction=DirectionConfig(top_n_changed=20),
-        candidates=CandidateConfig(explicit=("PGI", "PFK")),
+        candidates=CandidateConfig(explicit=("R2", "R3")),
         validation=TransformationValidationConfig(enabled=False),
     )
     rows = run_transformation_target_discovery(config).ranking
@@ -695,7 +699,7 @@ def test_rmta_run_publishes_the_three_components(tmp_path, transformation_inputs
         perturbation="reaction",
         epsilon=0.01,
         direction=DirectionConfig(top_n_changed=20),
-        candidates=CandidateConfig(explicit=("PGI", "PFK")),
+        candidates=CandidateConfig(explicit=("R2", "R3")),
         validation=TransformationValidationConfig(enabled=False),
     )
     rows = run_transformation_target_discovery(config).ranking
@@ -741,7 +745,7 @@ def test_completion_gate_catches_the_failures_a_browser_shows_as_success(
         perturbation="reaction",
         epsilon=0.01,
         direction=DirectionConfig(top_n_changed=20),
-        candidates=CandidateConfig(explicit=("PGI", "PFK", "TPI")),
+        candidates=CandidateConfig(explicit=("R2", "R3", "R5")),
     )
     result = run_transformation_target_discovery(config)
     render_transformation_report(result.run_directory)
@@ -761,7 +765,7 @@ def test_completion_gate_catches_the_failures_a_browser_shows_as_success(
         lambda root: (root / "05_transformation/transformation_ranking.csv").write_text(
             (root / "05_transformation/transformation_ranking.csv")
             .read_text()
-            .replace("PGI", "XXX"),
+            .replace("R2", "XXX"),
             encoding="utf-8",
         ),
     )

@@ -1,0 +1,32 @@
+{
+  "model_path": "data/demo_disease.xml",
+  "source_expression_path": "data/source_disease.csv",
+  "target_expression_path": "data/target_healthy.csv",
+  "output_dir": "../../results/example-transformation-mta",
+  "solver": "gurobi",
+  "method": "mta",
+  "perturbation": "gene",
+  "reference_method": "eflux2",
+  "epsilon": 0.01,
+  "direction": {
+    "significance": "fold_change",
+    "ranking": "fold_change",
+    "top_n_changed": null
+  },
+  "condition": {
+    "name": "synthetic_disease_to_healthy_demo",
+    "bounds": [
+      {"reaction_id": "SUP_A", "lower_bound": 0.0, "upper_bound": 10.0},
+      {"reaction_id": "R1", "lower_bound": 0.0, "upper_bound": 1000.0},
+      {"reaction_id": "R2", "lower_bound": 0.0, "upper_bound": 1000.0},
+      {"reaction_id": "R3", "lower_bound": 0.0, "upper_bound": 1000.0},
+      {"reaction_id": "R5", "lower_bound": 0.0, "upper_bound": 1000.0},
+      {"reaction_id": "BIOMASS", "lower_bound": 0.0, "upper_bound": 1000.0}
+    ],
+    "notes": "Existing CMM synthetic fixture: SOURCE_EXPRESSION (disease) -> TARGET_EXPRESSION (healthy), one linear measurement per gene. Supply of A is capped at 10; this model has no oxygen exchange. All reaction bounds are explicit."
+  },
+  "validation": {
+    "epsilon_sweep": [0.001, 0.01]
+  },
+  "overwrite": false
+}

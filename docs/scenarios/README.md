@@ -12,7 +12,7 @@ capability gates. Read the section here when a result needs interpreting.
 Read `docs/agent-reference.md` for signatures when writing narrow API calls. To change workflow
 parameters or compose a downstream study, follow
 [Building or customizing a CMM workflow](../building-custom-workflows.md). Contributors adding
-a second installed workflow should use the
+another installed workflow should use the
 [canonical-workflow tutorial](../tutorials/adding-a-canonical-workflow.md).
 
 ## Index
