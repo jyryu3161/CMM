@@ -378,9 +378,16 @@ def test_revert_stage_boxes_share_one_label_column(app):
         assert (
             QFontMetrics(label.font()).horizontalAdvance(label.text()) <= label.width()
         )
-    # Measured against the styled font, not the default one: measuring before the labels are
-    # realized would reserve a column half again wider than the text needs.
-    assert 0 < widths.pop() < 160
+    # Bound unused space against the actual styled text. A fixed 160px ceiling assumes the
+    # host's font metrics instead of distinguishing wider glyphs from excess column padding.
+    # Measuring before fonts settle would still fail by leaving an oversized label column.
+    widest_text = max(
+        QFontMetrics(label.font()).horizontalAdvance(label.text()) for label in labels
+    )
+    shared_width = widths.pop()
+    assert 0 < widest_text <= shared_width <= widest_text + 8, (
+        f"shared column {shared_width}px, widest styled text {widest_text}px"
+    )
 
 
 def test_stage_controls_share_one_height(app):
