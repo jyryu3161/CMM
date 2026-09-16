@@ -1,0 +1,15 @@
+{
+  "id": "sc01-succinate-anaerobic",
+  "kind": "production",
+  "request": "Find over-expression and knockout targets for succinate in e_coli_core under a glucose-limited anaerobic condition, and validate the run.",
+  "run_dir": "results/example-production-succinate",
+  "expect": {
+    "validates": true,
+    "provenance_fields": ["model_sha256", "solver", "solver_version", "cmm", "cobra", "python"],
+    "condition_bounds_include": ["EX_glc__D_e", "EX_o2_e"],
+    "tables_retain_status": [
+      "04_single_knockout/single_knockout_moma.csv",
+      "04_single_knockout/single_knockout_room.csv"
+    ]
+  }
+}

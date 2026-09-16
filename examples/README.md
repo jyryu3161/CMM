@@ -17,3 +17,27 @@ For a new product, model, expression pair or condition, copy the corresponding e
 change its config. For a new scientific workflow with different stages or artifacts, follow
 the [customization guide](../docs/building-custom-workflows.md) and
 [contributor tutorial](../docs/tutorials/adding-a-canonical-workflow.md).
+
+## Non-obvious patterns
+
+- **Gotcha: `prepare.py` refuses to overwrite an existing input.** It exits with
+  `Input already exists; preserve or move it first` so a curated study input is never silently
+  replaced. To re-run an example from scratch, move or delete that example's `data/` directory
+  first:
+
+  ```bash
+  rm -rf examples/production-targets/data      # or move it somewhere safe
+  uv run --frozen --all-extras python examples/production-targets/prepare.py
+  ```
+
+- **Note: a run directory is not overwritten either.** Each config names an explicit
+  `output_dir`; remove the previous run or point the config elsewhere before repeating it.
+- **Why: the example inputs are generated, not committed.** `prepare.py` writes them from
+  COBRApy's bundled models or CMM's own fixtures, and `MANIFEST.in` prunes both `data/`
+  directories, so the distribution stays free of duplicated model files.
+
+## See also
+
+- [`docs/scenarios/`](../docs/scenarios/README.md) — what each workflow's numbers mean
+- [`evals/`](../evals/README.md) — contract checks these example runs are expected to pass
+- [`AGENTS.md`](../AGENTS.md) — routing, solver gate, and the operating rules a run must honour
