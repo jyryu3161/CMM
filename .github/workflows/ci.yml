@@ -490,6 +490,22 @@ jobs:
           print(f"executed all {len(executed)} solver capability tests with no exceptions")
           PY
 
+      # The commands a reader copies out of the README are not covered by the unit suite: a
+      # change can keep every test green and still break the first thing a new user runs.
+      # Only SC-02 is exercised here. Its six-reaction model fits the restricted licence,
+      # whereas SC-01's L2 MOMA on e_coli_core is 286 variables and fails under it — see the
+      # solver-licence table in README.md. SC-01 needs a full licence to run end to end.
+      - name: Run the documented SC-02 example end to end
+        run: |
+          uv run --no-sync python examples/transformation-targets/prepare.py
+          uv run --no-sync cmm transformation-targets \
+            --config examples/transformation-targets/config.json
+          uv run --no-sync cmm report validate \
+            results/example-transformation-mta --json
+          uv run --no-sync python evals/run_evals.py \
+            --task evals/tasks/sc02_transformation.json \
+            --run-dir results/example-transformation-mta
+
       - name: Upload restricted-solver coverage
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
