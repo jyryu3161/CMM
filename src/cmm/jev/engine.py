@@ -36,7 +36,7 @@ from dataclasses import dataclass, field, replace
 import json
 import math
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import pandas as pd
 from cobra import Model
@@ -51,6 +51,7 @@ from cmm.core.solvers import solver_status, supports
 from cmm.jev._transport import DecisionResult, JevClient, JevTransportError
 from cmm.jev.actions import (
     ACTION_CATALOGUE,
+    ADOPT_ACTION,
     END_ACTION,
     UNDO_ACTION,
     ActionNotApplicable,
@@ -68,6 +69,10 @@ from cmm.jev.questions import (
     get_question_set,
     research_query,
 )
+
+if TYPE_CHECKING:  # the benchmark imports this module, so the type is compile-time only
+    from cmm.jev.benchmark import BaselineRow
+
 from cmm.jev.state import (
     CandidateEvidence,
     GameState,
@@ -133,12 +138,30 @@ class JevConfig:
     candidate_limit: int = 24
     allow_look_actions: bool = True
     run_moma: bool = True
+    #: Bounds on the ``strain_design_scan`` LOOK move. It runs the same OptKnock and
+    #: RobustKnock services the SC-01 workflow uses, so its cost is theirs.
+    design_max_knockouts: int = 3
+    design_max_solutions: int = 5
+    #: Run the deterministic strain designer once before the first move and put the reactions
+    #: it names on the board from the start. On anaerobic succinate the designer's answer
+    #: deletes reactions carrying no flux at all, which no flux-derived board can surface, so
+    #: without this the agent cannot reach the known optimum however long it plays. Seeding it
+    #: is not cheating: the agent is being handed CMM's best deterministic result and asked to
+    #: improve on it, which is the only comparison that means anything.
+    seed_with_strain_design: bool = True
+    #: After the game, score the agent's design against the deterministic methods on the same
+    #: problem, every design evaluated the same way. An agent result with nothing to compare
+    #: it to is not a result.
+    run_baseline_comparison: bool = True
 
     # -- the agent ----------------------------------------------------------
     jev_model: str = "typesafe/jev-1.13"
     question_set: str = DEFAULT_QUESTION_SET
     enable_web_research: bool = False
     research_model: str = "openai/gpt-5.6-luna"
+    #: A web lookup costs roughly $0.05 — about three hundred times a JEV decision, because
+    #: the search results themselves are billed as input. Eight is a few dollars at most and
+    #: still enough to cover the candidates that matter.
     max_research_calls: int = 8
     max_decisions: int = 2000
     max_cost_usd: float = 5.0
@@ -221,6 +244,10 @@ class JevConfig:
             "growth_floor": self.growth_floor,
             "candidate_limit": self.candidate_limit,
             "allow_look_actions": self.allow_look_actions,
+            "design_max_knockouts": self.design_max_knockouts,
+            "design_max_solutions": self.design_max_solutions,
+            "seed_with_strain_design": self.seed_with_strain_design,
+            "run_baseline_comparison": self.run_baseline_comparison,
             "run_moma": self.run_moma,
             "jev_model_requested": self.jev_model,
             "question_set": self.question_set,
@@ -364,6 +391,10 @@ class JevResult:
     final_interventions: tuple[Intervention, ...]
     flux_frames: tuple[Mapping[str, float], ...] = ()
     transcript: tuple[Mapping[str, object], ...] = ()
+    baselines: tuple["BaselineRow", ...] = ()
+    #: reaction id -> (full literature answer, citation urls). The board carries only an
+    #: excerpt; this is the whole thing, so a reader can check what the agent was told.
+    literature: Mapping[str, tuple[str, tuple[str, ...]]] = field(default_factory=dict)
     notes: tuple[str, ...] = ()
     usage: Mapping[str, object] = field(default_factory=dict)
     run_directory: Path | None = None
@@ -388,9 +419,40 @@ class JevResult:
             "n_best_interventions": len(self.best_interventions),
             "best_design": [i.describe() for i in self.best_interventions],
             "question_set": self.config.question_set,
+            "baseline_comparison": self.baseline_summary(),
             "notes": list(self.notes),
             "usage": dict(self.usage),
         }
+
+    def baseline_summary(self) -> dict[str, object] | None:
+        """How the agent's design scored against the deterministic methods, or None."""
+
+        if not self.baselines:
+            return None
+        from cmm.jev.benchmark import comparison_summary
+
+        return comparison_summary(self.baselines, product=self.config.product)
+
+    def baselines_frame(self) -> pd.DataFrame:
+        from cmm.jev.benchmark import comparison_frame
+
+        return comparison_frame(self.baselines)
+
+    def literature_frame(self) -> pd.DataFrame:
+        """What the web lookup returned, in full, with its sources."""
+
+        return pd.DataFrame(
+            [
+                {
+                    "reaction_id": reaction_id,
+                    "evidence": text,
+                    "n_sources": len(urls),
+                    "sources": "; ".join(urls),
+                }
+                for reaction_id, (text, urls) in sorted(self.literature.items())
+            ],
+            columns=["reaction_id", "evidence", "n_sources", "sources"],
+        )
 
     def ticks_frame(self) -> pd.DataFrame:
         return pd.DataFrame([tick.to_row() for tick in self.ticks])
@@ -428,6 +490,9 @@ class _Board:
     failed_moves: dict[str, set[str]] = field(default_factory=dict)
     #: Scan results as they stood before each applied intervention, so an undo gives them back.
     scan_stack: list[ScanCache] = field(default_factory=list)
+    #: Lines shown to the agent under ``notes`` in the state. Not history and not evidence
+    #: about one reaction: facts about the situation it is now in.
+    state_notes: list[str] = field(default_factory=list)
     #: reaction id -> the change in product flux measured when that intervention was applied.
     #: Shown next to each active intervention so dead weight is visible: an intervention that
     #: bought nothing still occupies one of the design's places, and withdrawing it is a real
@@ -603,6 +668,14 @@ def run_jev_design(
 
     board = _Board(model=model, reference=reference, product=product, biomass=biomass)
 
+    if config.seed_with_strain_design:
+        # Before the first move: hand the agent what the deterministic designer already knows.
+        # The reactions it names go on the board with the guaranteed product they buy, which
+        # is the only way an escape route carrying no flux today can ever be considered.
+        seeded = _run_scan(board, "strain_design_scan", (), config)
+        board.scans.completed.add("strain_design_scan")
+        notes.append(f"strain design seeded the board before the first move: {seeded}")
+
     question_set = get_question_set(config.question_set)
     ticks: list[TickRecord] = []
     round_records: list[RoundRecord] = []
@@ -666,6 +739,7 @@ def run_jev_design(
                         *(i.reaction_id for i in board.interventions),
                         *exhausted,
                     ],
+                    pinned=board.scans.design_notes,
                     limit=config.candidate_limit,
                 )
             )
@@ -695,8 +769,15 @@ def run_jev_design(
                     for move in sorted(moves)
                 ),
                 history=tuple(board.history),
-                notes=(
-                    (board.scans.envelope_note,) if board.scans.envelope_note else ()
+                notes=tuple(
+                    [
+                        *board.state_notes,
+                        *(
+                            [board.scans.envelope_note]
+                            if board.scans.envelope_note
+                            else []
+                        ),
+                    ]
                 ),
                 round_index=round_index,
                 tick_index=tick_index,
@@ -796,6 +877,32 @@ def run_jev_design(
         "wild_type_reference": "pfba",
     }
 
+    # The design the run ended on, captured before the comparison below strips the board
+    # back to the unmodified model. Reading it afterwards returned an empty design.
+    final_interventions = tuple(board.interventions)
+
+    baselines: tuple["BaselineRow", ...] = ()
+    if config.run_baseline_comparison:
+        from cmm.jev.benchmark import compare_with_baselines
+
+        # Every method's design is applied by the comparison itself, within its own reverting
+        # context, so the board's edits must not still be standing while it runs.
+        for _ in list(board.interventions):
+            board.undo()
+        try:
+            baselines = compare_with_baselines(
+                model,
+                product=product,
+                biomass=biomass,
+                growth_floor=config.growth_floor,
+                jev_interventions=best_interventions,
+                max_knockouts=config.design_max_knockouts,
+                max_solutions=config.design_max_solutions,
+                seed=config.seed,
+            )
+        except Exception as error:  # a comparison that fails must not lose the run
+            notes.append(f"the baseline comparison could not run: {error}")
+
     result = JevResult(
         config=config,
         provenance=provenance,
@@ -807,9 +914,11 @@ def run_jev_design(
         best_product_flux=best_product,
         best_growth=best_growth,
         best_interventions=best_interventions,
-        final_interventions=tuple(board.interventions),
+        final_interventions=final_interventions,
         flux_frames=tuple(flux_frames),
         transcript=tuple(transcript),
+        baselines=baselines,
+        literature=dict(board.scans.literature),
         notes=tuple([*notes, *board.notes]),
         usage=agent.usage.to_dict(),
     )
@@ -846,13 +955,29 @@ def _play_tick(
     allow_undo = bool(board.interventions)
     allow_look = config.allow_look_actions
 
+    room = config.max_interventions - len(board.interventions)
+    best_design = next(
+        (
+            design
+            for design in board.scans.designs
+            if len(design[1]) <= room
+            and not set(design[1]) & {i.reaction_id for i in board.interventions}
+        ),
+        None,
+    )
     target_questions = question_set.target_question(
         candidates,
         product=board.product,
         growth_floor=config.growth_floor,
         allow_undo=allow_undo,
         allow_look=allow_look,
-        design_full=len(board.interventions) >= config.max_interventions,
+        design_full=room <= 0,
+        proven_design=(
+            f"{best_design[0]} deletes {', '.join(best_design[1])} for "
+            f"{best_design[2]:.3g} guaranteed product"
+            if best_design
+            else ""
+        ),
     )
     stage1 = agent.decide(payload, target_questions)
     _record(transcript, round_index, tick_index, "target", payload, stage1)
@@ -908,6 +1033,16 @@ def _play_tick(
             reason="the agent judged no remaining move worthwhile",
             product_flux=state.product_flux,
             growth=state.growth,
+        )
+
+    if target == ADOPT_ACTION.name:
+        return _adopt_design(
+            board=board,
+            config=config,
+            design=best_design,
+            frame=frame,
+            use_linear_moma=use_linear_moma,
+            state=state,
         )
 
     if target == UNDO_ACTION.name:
@@ -1164,6 +1299,126 @@ def _solve(model: Model) -> FluxSolution:
         )
 
 
+def _adopt_design(
+    *,
+    board: _Board,
+    config: JevConfig,
+    design: tuple[str, tuple[str, ...], float] | None,
+    frame,
+    use_linear_moma: bool,
+    state: GameState,
+) -> TickRecord:
+    """Apply a whole proven knockout set as one move.
+
+    A design's deletions are only worth anything together. ``ACALD``, ``LDH_D`` and ``THD2``
+    reach 9.9 mmol gDW^-1 h^-1 of succinate as a set, while ``ACALD`` alone reaches almost
+    nothing — so an agent that judges each move by the product change it causes will abandon
+    the design after the first deletion. Offering the set as one move is what makes the
+    deterministic result reachable, and it leaves the interesting question open: whether an
+    amplification on top of a proven design beats the design alone, which is a question the
+    designer itself cannot answer.
+
+    The whole set is reverted together if it turns out infeasible or unviable, because a
+    partially applied design is not the thing that was proven.
+    """
+
+    if design is None:  # pragma: no cover - the move is not offered without one
+        return frame(
+            action=ADOPT_ACTION.name,
+            outcome="not_applicable",
+            reason="no proven design is available; run a strain design scan first",
+            product_flux=state.product_flux,
+            growth=state.growth,
+        )
+
+    method, knockouts, guaranteed = design
+    applied: list[Intervention] = []
+    for reaction_id in knockouts:
+        try:
+            intervention = build_intervention(
+                board.model,
+                reaction_id,
+                ACTION_CATALOGUE["knockout"],
+                reference_flux=float(board.reference.get(reaction_id, 0.0)),
+            )
+        except (ActionNotApplicable, KeyError) as error:
+            for _ in applied:
+                board.undo()
+            return frame(
+                action=ADOPT_ACTION.name,
+                outcome="not_applicable",
+                reason=f"the design could not be applied: {error}",
+                product_flux=state.product_flux,
+                growth=state.growth,
+            )
+        board.apply(intervention)
+        applied.append(intervention)
+
+    solution = _solve(board.model)
+    if solution.status != "optimal":
+        for _ in applied:
+            board.undo()
+        return frame(
+            action=ADOPT_ACTION.name,
+            outcome="reverted_infeasible",
+            reason=f"the {method} design left the model {solution.status}",
+            intervention=applied[-1] if applied else None,
+            status=solution.status,
+            product_flux=state.product_flux,
+            growth=state.growth,
+        )
+
+    new_product = float(solution.fluxes.get(board.product, 0.0))
+    new_growth = float(solution.fluxes.get(board.biomass, 0.0))
+    if new_growth < config.growth_floor:
+        for _ in applied:
+            board.undo()
+        return frame(
+            action=ADOPT_ACTION.name,
+            outcome="reverted_growth_floor",
+            reason=(
+                f"the {method} design drops growth to {new_growth:.4g} per hour, below the "
+                f"floor of {config.growth_floor}"
+            ),
+            intervention=applied[-1] if applied else None,
+            product_flux=state.product_flux,
+            growth=state.growth,
+        )
+
+    board.clear_failures()
+    # The one thing the designer cannot have considered, stated plainly because it is the
+    # whole remaining opportunity: OptKnock and RobustKnock search deletions only. Without
+    # this line, eight runs out of eight adopted the design and ended the round immediately,
+    # while forcing flux through the glyoxylate shunt on top of it reaches 10.76 against the
+    # design's 9.91.
+    note = (
+        f"The active design came from {method}, which searches deletions only — its "
+        "formulation cannot express forcing more flux through a reaction. An amplification "
+        "or a knockdown on top of it is a move it could not have considered, and is the only "
+        "kind of move left that might improve on a proven design."
+    )
+    if note not in board.state_notes:
+        board.state_notes.append(note)
+    for intervention in applied:
+        board.contribution[intervention.reaction_id] = 0.0
+    # The set bought the change, so the whole change is credited to its last member rather
+    # than split arbitrarily between deletions that mean nothing on their own.
+    if applied:
+        board.contribution[applied[-1].reaction_id] = new_product - state.product_flux
+    return frame(
+        action=ADOPT_ACTION.name,
+        outcome="applied",
+        reason=(
+            f"adopted the {method} design ({', '.join(knockouts)}), "
+            f"proven for {guaranteed:.3g} guaranteed product"
+        ),
+        intervention=applied[-1] if applied else None,
+        moma=_moma_snapshot(board, config, use_linear_moma),
+        product_flux=new_product,
+        growth=new_growth,
+    )
+
+
 def _run_scan(
     board: _Board,
     name: str,
@@ -1173,7 +1428,7 @@ def _run_scan(
     """Execute a LOOK move: a real CMM analysis whose answer enriches the next frame."""
 
     if name == "essentiality_scan":
-        found = 0
+        n_essential = 0
         for candidate in candidates:
             reaction = board.model.reactions.get_by_id(candidate.reaction_id)
             saved = reaction.bounds
@@ -1182,23 +1437,117 @@ def _run_scan(
             reaction.bounds = saved
             essential = math.isnan(growth) or growth < config.growth_floor
             board.scans.essential[candidate.reaction_id] = bool(essential)
-            found += int(essential)
-        return f"tested {len(candidates)} reactions; {found} are essential under this floor"
+            n_essential += int(essential)
+        return f"tested {len(candidates)} reactions; {n_essential} are essential under this floor"
 
     if name == "fseof_scan":
         from cmm.features.production import fseof
 
         try:
-            result = fseof(board.model, board.product, board.biomass)
+            scan = fseof(board.model, board.product, board.biomass)
         except Exception as error:  # a scan that cannot run is data, not a crash
             return f"FSEOF could not run: {error}"
-        trends = result.trends
+        trends = scan.trends
         if "slope" in trends:
             for reaction_id, slope in trends["slope"].items():
                 value = float(slope)
                 if math.isfinite(value):
                     board.scans.fseof_slopes[str(reaction_id)] = value
-        return f"FSEOF scanned {len(trends)} reactions at {len(result.enforced_levels)} levels"
+        return f"FSEOF scanned {len(trends)} reactions at {len(scan.enforced_levels)} levels"
+
+    if name == "amplification_screen":
+        # One solve per candidate, against the design as it stands. This is CMM answering
+        # the question the agent would otherwise have to guess at — and the guess is
+        # systematically wrong in a way worth naming: on anaerobic succinate the agent
+        # reaches for fumarate reductase, the direct product-forming step, which is already
+        # saturated and buys nothing, while the glyoxylate shunt buys 8.6%.
+        baseline = _solve(board.model)
+        if baseline.status != "optimal":
+            return "the screen needs a feasible starting point; the model is not"
+        before = float(baseline.fluxes.get(board.product, 0.0))
+        measured = 0
+        best: tuple[str, float] | None = None
+        for candidate in candidates:
+            action = (
+                ACTION_CATALOGUE["force_on_low"]
+                if abs(candidate.reference_flux) <= 1e-9
+                else ACTION_CATALOGUE["amplify_2x"]
+            )
+            try:
+                trial = build_intervention(
+                    board.model,
+                    candidate.reaction_id,
+                    action,
+                    reference_flux=candidate.reference_flux,
+                )
+            except ActionNotApplicable:
+                continue
+            reaction = board.model.reactions.get_by_id(candidate.reaction_id)
+            saved = reaction.bounds
+            reaction.bounds = (trial.lower_bound, trial.upper_bound)
+            solution = _solve(board.model)
+            reaction.bounds = saved
+            if solution.status != "optimal":
+                continue
+            if float(solution.fluxes.get(board.biomass, 0.0)) < config.growth_floor:
+                # Reported as no gain rather than omitted: a move that kills the strain is
+                # not a move, and leaving the row blank would read as "not yet measured".
+                board.scans.amplification_gains[candidate.reaction_id] = 0.0
+                measured += 1
+                continue
+            gain = float(solution.fluxes.get(board.product, 0.0)) - before
+            board.scans.amplification_gains[candidate.reaction_id] = gain
+            measured += 1
+            if best is None or gain > best[1]:
+                best = (candidate.reaction_id, gain)
+        if best is None:
+            return f"measured {measured} reactions; none of them raises the product"
+        return (
+            f"measured {measured} reactions; the best is {best[0]} at {best[1]:+.4g} "
+            "product flux"
+        )
+
+    if name == "strain_design_scan":
+        from cmm.features.strain_design import optknock, robustknock
+
+        named: dict[str, list[str]] = {}
+        summaries: list[str] = []
+        for method, solve in (("OptKnock", optknock), ("RobustKnock", robustknock)):
+            try:
+                proven = solve(
+                    board.model,
+                    board.product,
+                    biomass=board.biomass,
+                    max_knockouts=config.design_max_knockouts,
+                    max_solutions=config.design_max_solutions,
+                    min_growth=config.growth_floor,
+                    seed=config.seed,
+                )
+            except Exception as error:
+                # straindesign missing, or no MILP solver: a scan that cannot run is data.
+                summaries.append(f"{method} could not run: {error}")
+                continue
+            designs = proven.designs[: config.design_max_solutions]
+            summaries.append(f"{method} returned {len(proven.designs)} designs")
+            for design in designs:
+                board.scans.designs.append(
+                    (method, tuple(design.knockouts), float(design.guaranteed_product))
+                )
+                for reaction_id in design.knockouts:
+                    named.setdefault(reaction_id, []).append(
+                        f"{method} deletes it in a {len(design.knockouts)}-knockout design "
+                        f"reaching {design.guaranteed_product:.3g} guaranteed product"
+                    )
+        for reaction_id, notes in named.items():
+            board.scans.design_notes[reaction_id] = notes[0]
+        # Best guaranteed product first: that is the one ``adopt_best_design`` applies, and
+        # ranking by guaranteed rather than maximum product is CMM's own rule for designs.
+        board.scans.designs.sort(key=lambda item: (-item[2], item[0], item[1]))
+        if named:
+            summaries.append(
+                "these reactions were added to the board: " + ", ".join(sorted(named))
+            )
+        return "; ".join(summaries)
 
     if name == "envelope_probe":
         from cmm.features.production import production_envelope

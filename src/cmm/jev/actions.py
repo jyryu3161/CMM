@@ -178,6 +178,28 @@ LOOK_ACTIONS: tuple[Action, ...] = (
         ),
     ),
     Action(
+        name="amplification_screen",
+        kind="look",
+        description=(
+            "Do not change anything yet. For every reaction on the board, have CMM work out "
+            "what forcing flux through it would actually do to the product, and report the "
+            "answer. Choose this when you need to know which amplification pays before "
+            "spending a place in the design on one — the reaction on the obvious route is "
+            "often already saturated, and the one that pays is often a bypass."
+        ),
+    ),
+    Action(
+        name="strain_design_scan",
+        kind="look",
+        description=(
+            "Do not change anything yet. Run OptKnock and RobustKnock, which prove which "
+            "combination of deletions forces the product at maximum growth, and add the "
+            "reactions they name to the board. Choose this when you need the deletions that "
+            "close the cell's escape routes — including reactions carrying no flux today "
+            "that it could switch to once the obvious routes are shut."
+        ),
+    ),
+    Action(
         name="envelope_probe",
         kind="look",
         description=(
@@ -194,6 +216,18 @@ END_ACTION = Action(
     description=(
         "Stop acting for this round. Choose this when no remaining move is expected to "
         "improve the product, or the design should be evaluated as it stands."
+    ),
+)
+
+ADOPT_ACTION = Action(
+    name="adopt_best_design",
+    kind="act",
+    description=(
+        "Apply, in one move, the complete set of deletions the strain designer proved best. "
+        "Choose this when the designer has found a design and you want it as the base to "
+        "build on. Its deletions only pay off together: applied one at a time each looks "
+        "worthless, which is why they are offered as a single move. It uses one place in the "
+        "design per deletion."
     ),
 )
 
@@ -215,6 +249,7 @@ ACTION_CATALOGUE: Mapping[str, Action] = {
         *LOOK_ACTIONS,
         END_ACTION,
         UNDO_ACTION,
+        ADOPT_ACTION,
     )
 }
 

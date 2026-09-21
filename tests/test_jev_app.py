@@ -148,3 +148,30 @@ def test_asking_for_a_figure_before_a_run_says_so_rather_than_failing(window) ->
     assert "Run the agent first" in window.jev_summary.text()
     window.show_jev_last_decision()
     assert "Run the agent first" in window.jev_summary.text()
+
+
+def test_the_progress_bar_counts_moves_against_the_budget(window, monkeypatch) -> None:
+    """A determinate bar: the move budget is known before the first call.
+
+    Its maximum is an upper bound, not a target — the agent may end a round early — so the
+    bar is allowed to stop short rather than being stretched to look complete.
+    """
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    window._refresh_jev_inputs()
+    window._goto_tab("JEV Agent")
+    window.jev_product_combo.setCurrentText("EX_succ_e")
+    window.jev_rounds_spin.setValue(2)
+    window.jev_ticks_spin.setValue(3)
+    monkeypatch.setattr(
+        "cmm.jev.engine.JevClient",
+        lambda **kwargs: ScriptedClient([("SUCOAS", "force_on_high")]),
+        raising=True,
+    )
+
+    window.run_jev_agent()
+
+    assert window.jev_progress.maximum() == 6  # 2 rounds x 3 moves
+    assert window.jev_progress.value() == len(window._jev_frames)
+    assert window.jev_progress.value() <= window.jev_progress.maximum()
+    assert "finished after" in window.jev_progress.format()

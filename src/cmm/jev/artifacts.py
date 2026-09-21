@@ -31,6 +31,7 @@ _STAGE_DIRECTORIES = (
     "02_game",
     "03_design",
     "04_agent",
+    "05_baseline",
     "model",
     "figures",
 )
@@ -169,6 +170,17 @@ def export_run(result: JevResult, *, model: Model, reference: FluxState) -> JevR
         role="agent_transcript",
         media_type="application/x-ndjson",
     )
+    writer.csv(
+        "04_agent/literature.csv",
+        result.literature_frame(),
+        stage="04_agent",
+        role="literature_evidence",
+        method="openrouter_web_plugin",
+        status="complete" if result.literature else "skipped",
+        reason=(
+            None if result.literature else "web research was not enabled for this run"
+        ),
+    )
     writer.json(
         "04_agent/usage.json",
         {
@@ -180,6 +192,22 @@ def export_run(result: JevResult, *, model: Model, reference: FluxState) -> JevR
         },
         stage="04_agent",
         role="agent_usage",
+    )
+
+    # -- 05 what the deterministic methods give on the same problem ---------
+    writer.csv(
+        "05_baseline/comparison.csv",
+        result.baselines_frame(),
+        stage="05_baseline",
+        role="baseline_comparison",
+        method="optknock;robustknock;moma_l2;fseof",
+        status="complete" if result.baselines else "skipped",
+        reason=(
+            None
+            if result.baselines
+            else "run_baseline_comparison was disabled, so the agent's design has nothing "
+            "to be measured against"
+        ),
     )
 
     # -- root ---------------------------------------------------------------

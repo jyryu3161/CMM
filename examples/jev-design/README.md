@@ -23,11 +23,40 @@ R1T5 force_on_high on FUM reverted: growth would fall to 0.03387 per hour, below
 R1T6 force_on_low on FUM → product 1.911, growth 0.0635 (product rose by +1.911)
 ```
 
+## What it is measured against
+
+Every run scores itself against the deterministic methods on the same problem, every design
+applied and solved the same way, and prints the table:
+
+```
+  wild type                              product    0.0000  growth  0.2117
+  best single gene deletion (MOMA-L2)    product    0.2114  growth  0.1646
+  OptKnock                               product    9.9108  growth  0.0906
+  RobustKnock                            product    9.9108  growth  0.0906
+  JEV agent                              product   10.7613  growth  0.0680  (not deterministic)
+```
+
+Read it honestly. A single gene deletion cannot solve this problem — the best of 71 reaches
+0.211. OptKnock proves 9.911 in under a second, and an agent searching on its own does not
+match it: the winning design deletes `LDH_D` and `THD2`, which carry no flux in the wild type,
+and a board built from where the flux is today cannot see them. What the agent adds is the
+move OptKnock's formulation cannot express — forcing flux through the glyoxylate shunt on top
+of OptKnock's own design, for 10.761 at a real cost in growth (0.068 against 0.091).
+
+Over ten runs of this configuration: nine reached 10.761, one stopped at 9.911, none fell
+below it. That is one problem on one small model, and it is not a claim about yours.
+
 ## What it costs
 
 Measured on this configuration: two calls per move, about 0.6 s and $0.00016 per move. A
-36-move run is roughly 40 seconds of agent time and under a cent. The limit that matters is
-JEV's 32K context, which `candidate_limit` keeps the state inside.
+typical run here is 10 to 13 moves, about 7 seconds and $0.002. The limit that matters is
+JEV's 32K context, which `candidate_limit` keeps the state inside — the evidence is sent once,
+in `state.records`, and the question's criteria carry only a label, because sending the record
+in both places cost 40% of the payload and changed nothing.
+
+`enable_web_research` is the exception: a lookup costs roughly **$0.05**, about three hundred
+times a decision, because the search results are billed as input. `max_research_calls` bounds
+it.
 
 ## What comes out
 
@@ -38,6 +67,8 @@ results/example-jev-succinate/
   02_game/candidate_rankings.csv   the agent's probability over every option, every tick
   03_design/best_design.csv        the design that scored best while holding the growth floor
   04_agent/transcript.jsonl        every request and response
+  04_agent/literature.csv          what the web lookup returned, in full, with its sources
+  05_baseline/comparison.csv       what the deterministic methods give on the same problem
 ```
 
 ## Read the result honestly

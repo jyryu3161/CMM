@@ -104,12 +104,21 @@ pushes growth below the configured floor is reverted by CMM whatever the agent p
 the reversal is a recorded row. A move that is merely unhelpful is kept for the agent to
 withdraw itself.
 
+**Every run scores itself against the deterministic methods**, on the same model and the
+same growth floor, every design applied and solved the same way. On the shipped anaerobic
+succinate example the best single gene deletion of 71 reaches 0.211 mmol gDW⁻¹ h⁻¹, OptKnock
+and RobustKnock reach 9.911, and the agent reaches 10.761 — but only because it is handed
+OptKnock's own proven design and adds the one move OptKnock cannot express, forcing flux
+through the glyoxylate shunt, at a real cost in growth. Left to search on its own it does not
+match 9.911 at all: the winning design deletes reactions carrying no flux in the wild type,
+and a board built from where the flux is today cannot see them. Over ten runs of one
+configuration, nine reached 10.761 and one stopped at 9.911, for $0.02 and 66 seconds in
+total.
+
 Measured on `e_coli_core`: two calls per move, about 0.6 s and $0.00016 each, so a full run
-costs under a cent. **The CMM solves in a run are deterministic; JEV's decisions are not** —
-repeated runs of one configuration have produced designs differing several-fold in product
-flux. Every request and response is saved to `04_agent/transcript.jsonl` so a single run can
-be audited, which is not the same as the method being reproducible; a single run is never the
-method's performance. See the
+costs a fraction of a cent. **The CMM solves in a run are deterministic; JEV's decisions are
+not.** Every request and response is saved to `04_agent/transcript.jsonl` so a single run can
+be audited, which is not the same as the method being reproducible. See the
 [SC-03 contract](docs/scenarios/SC-03-jev-agent-design.md) and the
 [succinate example](examples/jev-design/README.md).
 The command writes raw tables, archives both expression inputs, renders R figures and both

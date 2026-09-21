@@ -27,6 +27,7 @@ from qtpy.QtCore import QObject, Qt, Signal
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
     QCheckBox,
+    QProgressBar,
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
@@ -152,6 +153,15 @@ class JevTabMixin:
         form.addRow("", self.jev_run_btn)
         layout.addWidget(controls)
 
+        # A determinate bar: rounds x moves-per-round is known before the first call, so
+        # the run can say how far through it is rather than only that it is busy.
+        self.jev_progress = QProgressBar()
+        self.jev_progress.setTextVisible(True)
+        self.jev_progress.setFormat("idle")
+        self.jev_progress.setRange(0, 1)
+        self.jev_progress.setValue(0)
+        layout.addWidget(self.jev_progress)
+
         self.jev_summary = QLabel(
             "JEV is a decision model: it is shown the metabolic state and picks one move at "
             "a time from a fixed set. CMM executes each move, re-solves, and redraws the "
@@ -238,6 +248,10 @@ class JevTabMixin:
 
         self.jev_table.setRowCount(0)
         self._jev_frames = []
+        total_moves = self.jev_rounds_spin.value() * self.jev_ticks_spin.value()
+        self.jev_progress.setRange(0, total_moves)
+        self.jev_progress.setValue(0)
+        self.jev_progress.setFormat(f"starting \u2014 up to {total_moves} moves")
         self.jev_summary.setText(f"JEV is playing for {html.escape(product)}…")
 
         # Serialize on the UI thread: the worker must not touch this model's solver object.
@@ -315,6 +329,10 @@ class JevTabMixin:
             worker.deleteLater()
             self.jev_controls.setEnabled(True)
             self.jev_run_btn.setEnabled(True)
+            played = len(self._jev_frames)
+            self.jev_progress.setFormat(
+                f"finished after {played} move{'' if played == 1 else 's'}"
+            )
 
         if worker.error is not None:
             raise worker.error
@@ -326,7 +344,27 @@ class JevTabMixin:
         self._jev_frames.append((tick, fluxes))
         self._append_jev_row(tick)
         self._draw_jev_map(tick, fluxes)
+        self._advance_jev_progress(tick)
         self.status_label.setText(tick.headline())
+
+    def _advance_jev_progress(self, tick) -> None:
+        """Move the bar and say what the run has actually achieved so far.
+
+        The maximum is an upper bound, not a target: the agent may end a round early and
+        finish well short of it, so the bar is allowed to stop before it fills rather than
+        being stretched to look complete.
+        """
+
+        played = len(self._jev_frames)
+        self.jev_progress.setValue(min(played, self.jev_progress.maximum()))
+        best = max(
+            (float(frame.product_flux) for frame, _ in self._jev_frames),
+            default=0.0,
+        )
+        self.jev_progress.setFormat(
+            f"round {tick.round_index} \u00b7 move {played} of up to "
+            f"{self.jev_progress.maximum()} \u00b7 best {best:.4g}"
+        )
 
     def _append_jev_row(self, tick) -> None:
         row = self.jev_table.rowCount()

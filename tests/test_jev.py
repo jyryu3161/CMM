@@ -522,6 +522,9 @@ def test_a_scripted_game_switches_the_pathway_on_and_records_every_move(
         growth_floor=0.01,
         candidate_limit=12,
         run_moma=False,
+        # The loop is under test here, not the strain designer; seeding would run
+        # OptKnock on every one of these and change the board it produces.
+        seed_with_strain_design=False,
     )
     frames: list[tuple] = []
     result = run_jev_design(
@@ -559,6 +562,9 @@ def test_cmm_enforces_the_growth_floor_whatever_the_agent_chose(
         growth_floor=0.05,
         candidate_limit=12,
         run_moma=False,
+        # The loop is under test here, not the strain designer; seeding would run
+        # OptKnock on every one of these and change the board it produces.
+        seed_with_strain_design=False,
     )
     result = run_jev_design(config, client=client)
 
@@ -599,6 +605,9 @@ def test_the_intervention_cap_is_never_exceeded(anaerobic_core_path, tmp_path) -
         growth_floor=0.01,
         candidate_limit=12,
         run_moma=False,
+        # The loop is under test here, not the strain designer; seeding would run
+        # OptKnock on every one of these and change the board it produces.
+        seed_with_strain_design=False,
     )
     result = run_jev_design(config, client=client)
     assert len(result.final_interventions) <= 2
@@ -617,6 +626,9 @@ def test_the_run_stops_when_the_budget_is_spent(anaerobic_core_path, tmp_path) -
         growth_floor=0.01,
         candidate_limit=12,
         run_moma=False,
+        # The loop is under test here, not the strain designer; seeding would run
+        # OptKnock on every one of these and change the board it produces.
+        seed_with_strain_design=False,
         max_decisions=6,
     )
     result = run_jev_design(config, client=client)
@@ -641,6 +653,9 @@ def test_the_run_writes_one_artifact_per_role_and_every_file_exists(
         growth_floor=0.01,
         candidate_limit=12,
         run_moma=False,
+        # The loop is under test here, not the strain designer; seeding would run
+        # OptKnock on every one of these and change the board it produces.
+        seed_with_strain_design=False,
     )
     result = run_jev_design(config, client=client)
     root = result.run_directory
@@ -694,6 +709,9 @@ def test_provenance_records_the_model_that_answered_and_the_question_set(
         growth_floor=0.01,
         candidate_limit=12,
         run_moma=False,
+        # The loop is under test here, not the strain designer; seeding would run
+        # OptKnock on every one of these and change the board it produces.
+        seed_with_strain_design=False,
     )
     result = run_jev_design(config, client=client)
     provenance = json.loads(
@@ -730,6 +748,9 @@ def test_the_run_provenance_carries_every_required_field(
         growth_floor=0.01,
         candidate_limit=12,
         run_moma=False,
+        # The loop is under test here, not the strain designer; seeding would run
+        # OptKnock on every one of these and change the board it produces.
+        seed_with_strain_design=False,
     )
     result = run_jev_design(config, client=client)
     missing = [field for field in REQUIRED_FIELDS if field not in result.provenance]
@@ -750,6 +771,9 @@ def test_the_state_the_agent_sees_carries_the_engineering_evidence(
         growth_floor=0.01,
         candidate_limit=12,
         run_moma=False,
+        # The loop is under test here, not the strain designer; seeding would run
+        # OptKnock on every one of these and change the board it produces.
+        seed_with_strain_design=False,
     )
     run_jev_design(config, client=client)
 
@@ -803,6 +827,7 @@ def test_an_unknown_product_names_the_exchanges_that_exist(
         biomass="Biomass_Ecoli_core",
         rounds=1,
         ticks_per_round=1,
+        seed_with_strain_design=False,
     )
     with pytest.raises(Exception, match="not a reaction in this model"):
         run_jev_design(config, client=ScriptedClient([]))
@@ -973,3 +998,290 @@ def test_usage_totals_are_what_the_budget_guard_reads(client, monkeypatch) -> No
         "cost_usd": 0.0003,
     }
     assert client.served_models == ["typesafe/jev-1.13-x"]
+
+
+def test_the_strain_designer_seeds_reactions_no_flux_board_could_reach(
+    anaerobic_core_path, tmp_path
+) -> None:
+    """The gap that made the agent unable to reach the known optimum.
+
+    OptKnock's best anaerobic succinate design deletes ``LDH_D`` and ``THD2``, neither of
+    which carries any flux in the wild type. They sit near nothing, carry nothing, and feed no
+    secreted byproduct, so every slate the board is built from is blind to them. Seeding puts
+    them on it with the guaranteed product they buy.
+    """
+
+    pytest.importorskip("straindesign")
+
+    client = ScriptedClient([("end_round", None)])
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        rounds=1,
+        ticks_per_round=1,
+        growth_floor=0.05,
+        candidate_limit=24,
+        run_moma=False,
+        seed_with_strain_design=True,
+    )
+    run_jev_design(config, client=client)
+
+    offered = set(client.asked[0]["target"]["criteria"])
+    assert {"LDH_D", "THD2"} <= offered, (
+        "the designer's zero-flux escape routes must reach the board"
+    )
+    records = {record["id"]: record["record"] for record in client.states[0]["records"]}
+    assert "guaranteed product" in records["LDH_D"]
+    # Strongest evidence first: the designer's reactions lead the board.
+    first = client.states[0]["records"][0]["id"]
+    assert records[first].count("deletes it") or first in offered
+
+
+def test_a_proven_design_can_be_adopted_as_one_move(
+    anaerobic_core_path, tmp_path
+) -> None:
+    """A design's deletions pay off only together, so they are offered together.
+
+    Applied one at a time, each deletion looks worthless and a move-by-move agent abandons
+    the design after the first. This asserts the whole set lands, and that the product it
+    reaches is the one the designer proved rather than the fraction one deletion buys.
+    """
+
+    pytest.importorskip("straindesign")
+
+    client = ScriptedClient([("adopt_best_design", None)])
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        output_dir=tmp_path / "run",
+        rounds=1,
+        ticks_per_round=1,
+        max_interventions=4,
+        growth_floor=0.05,
+        candidate_limit=24,
+        run_moma=False,
+        seed_with_strain_design=True,
+    )
+    result = run_jev_design(config, client=client)
+
+    adopted = [tick for tick in result.ticks if tick.action == "adopt_best_design"]
+    assert adopted, "the move must be offered once a design exists"
+    assert adopted[0].outcome == "applied"
+    assert len(result.final_interventions) >= 2, "a design is more than one deletion"
+    assert all(i.mode == "knockout" for i in result.final_interventions)
+    # The point of adopting it: the proven product, not the fraction one deletion buys.
+    assert result.best_product_flux > 5.0
+    assert result.best_growth >= config.growth_floor
+
+
+# ---------------------------------------------------------------------------
+# measured evidence, and the comparison that gives a result meaning
+# ---------------------------------------------------------------------------
+
+
+def test_the_amplification_screen_measures_what_the_agent_would_guess_wrong(
+    anaerobic_core_path, tmp_path
+) -> None:
+    """CMM answers the question the agent is systematically bad at.
+
+    Asked which reaction to amplify for succinate, the agent reaches for fumarate reductase —
+    the direct product-forming step, which is already saturated and buys nothing. The screen
+    solves the question instead of reasoning about it, and the record carries the measured
+    change rather than an expectation.
+    """
+
+    client = ScriptedClient([("FRD7", "amplification_screen"), ("end_round", None)])
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        rounds=1,
+        ticks_per_round=2,
+        growth_floor=0.01,
+        candidate_limit=16,
+        run_moma=False,
+        seed_with_strain_design=False,
+        run_baseline_comparison=False,
+    )
+    run_jev_design(config, client=client)
+
+    scan = [tick for tick in client.asked if "action" in tick]
+    assert scan, "the screen must be offered as an action"
+    # The second tick's state carries what the first tick measured.
+    records = {r["id"]: r["record"] for r in client.states[-1]["records"]}
+    measured = [text for text in records.values() if "measured" in text.lower()]
+    assert measured, "the screen's numbers must reach the board"
+    assert any("raises the product" in text for text in measured)
+
+
+def test_a_screened_reaction_is_not_screened_again(anaerobic_core) -> None:
+    from cmm.jev.state import CandidateEvidence
+
+    candidate = CandidateEvidence(
+        reaction_id="FRD7",
+        name="fumarate reductase",
+        subsystem="",
+        genes=("b4151",),
+        reference_flux=0.0,
+        current_flux=0.0,
+        lower_bound=0.0,
+        upper_bound=1000.0,
+        distance_to_product=2,
+        net_atp=0.0,
+        net_nadh=-1.0,
+        net_nadph=0.0,
+        atp_production_share=0.0,
+        amplification_gain=0.0,
+    )
+    offered = get_question_set().action_question(
+        candidate,
+        product="EX_succ_e",
+        growth_floor=0.05,
+        allow_look=True,
+    )["action"]["criteria"]
+    assert "amplification_screen" not in offered
+
+
+def test_the_comparison_scores_every_method_the_same_way(anaerobic_core) -> None:
+    """A comparison where each method reports its own favourite quantity is not one."""
+
+    pytest.importorskip("straindesign")
+    from cmm.jev.actions import ACTION_CATALOGUE, build_intervention
+    from cmm.jev.benchmark import (
+        compare_with_baselines,
+        comparison_frame,
+        comparison_summary,
+    )
+
+    design = tuple(
+        build_intervention(
+            anaerobic_core, rid, ACTION_CATALOGUE["knockout"], reference_flux=0.0
+        )
+        for rid in ("ACALD", "D_LACt2", "THD2")
+    )
+    rows = compare_with_baselines(
+        anaerobic_core,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        growth_floor=0.05,
+        jev_interventions=design,
+        run_single_gene_screen=False,
+    )
+    methods = {row.method for row in rows}
+    assert {"wild type", "OptKnock", "RobustKnock", "JEV agent"} <= methods
+
+    wild = next(row for row in rows if row.method == "wild type")
+    assert wild.product_flux == pytest.approx(0.0, abs=1e-6)
+    agent = next(row for row in rows if row.method == "JEV agent")
+    assert agent.product_flux > 5.0
+    assert agent.deterministic is False
+
+    frame = comparison_frame(rows)
+    assert list(frame["method"])[0] == "wild type"  # something to be a change from
+    summary = comparison_summary(rows, product="EX_succ_e")
+    assert "OptKnock" in str(summary["best_deterministic_method"])
+    assert summary["verdict"]
+
+
+def test_the_comparison_survives_a_method_that_cannot_run(
+    anaerobic_core, monkeypatch
+) -> None:
+    """A designer that is not installed is a row saying so, not a lost comparison."""
+
+    from cmm.jev import benchmark
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("strain design requires the 'straindesign' package")
+
+    monkeypatch.setattr(
+        benchmark,
+        "_strain_design_row",
+        lambda *a, **k: benchmark.BaselineRow(
+            method=a[1],
+            design=(),
+            product_flux=float("nan"),
+            growth=float("nan"),
+            seconds=0.0,
+            deterministic=True,
+            status="failed",
+            note="not installed",
+        ),
+    )
+    rows = benchmark.compare_with_baselines(
+        anaerobic_core,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        growth_floor=0.05,
+        run_single_gene_screen=False,
+    )
+    failed = [row for row in rows if row.status == "failed"]
+    assert failed
+    assert all("not installed" in row.note for row in failed)
+    # The rest of the comparison is still there.
+    assert any(row.method == "wild type" for row in rows)
+
+
+def test_a_literature_answer_is_trimmed_on_the_board_and_kept_whole_in_the_bundle(
+    anaerobic_core,
+) -> None:
+    """A web lookup returns about a thousand characters; four would be a quarter of 32K."""
+
+    from cmm.jev.state import LITERATURE_EXCERPT_CHARS, CandidateEvidence
+
+    long_text = (
+        "Deleting ldhA raises succinate but growth collapses anaerobically. " * 20
+    )
+    candidate = CandidateEvidence(
+        reaction_id="LDH_D",
+        name="D-lactate dehydrogenase",
+        subsystem="",
+        genes=("b1380",),
+        reference_flux=0.0,
+        current_flux=0.0,
+        lower_bound=0.0,
+        upper_bound=1000.0,
+        distance_to_product=5,
+        net_atp=0.0,
+        net_nadh=1.0,
+        net_nadph=0.0,
+        atp_production_share=0.0,
+        literature=long_text,
+        citations=("https://example.org/a", "https://example.org/b"),
+    )
+    record = candidate.to_record()
+    assert len(record) < len(long_text)
+    assert "published evidence [2 sources]" in record
+    assert "…" in record  # the excerpt says it was cut
+    assert LITERATURE_EXCERPT_CHARS < len(long_text)
+
+
+def test_the_answer_space_does_not_repeat_the_evidence(anaerobic_core) -> None:
+    """Sending the record twice cost 40% of the payload and bought nothing.
+
+    Measured against the live service on the same board: 3050 input tokens with the record
+    repeated in the criteria, 2507 with only a label, the same reaction chosen either way.
+    """
+
+    fluxes = pfba(anaerobic_core).fluxes
+    board = build_candidates(
+        anaerobic_core,
+        product_reaction_id="EX_succ_e",
+        reference_fluxes=fluxes,
+        current_fluxes=fluxes,
+        limit=20,
+    )
+    question = get_question_set().target_question(
+        board,
+        product="EX_succ_e",
+        growth_floor=0.05,
+        allow_undo=False,
+        allow_look=True,
+    )["target"]
+    for candidate in board:
+        label = question["criteria"][candidate.reaction_id]
+        assert label != candidate.to_record()
+        assert len(label) < len(candidate.to_record())
+    # The instructions have to say where the evidence is, or the labels are all there is.
+    assert "record with the same id" in question["instructions"]

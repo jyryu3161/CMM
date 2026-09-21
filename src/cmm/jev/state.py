@@ -71,6 +71,12 @@ DISPLAY_EPSILON = 1e-9
 
 #: How the board is divided between the three slates (see :func:`build_candidates`). The
 #: remainder goes to the plain flux carriers.
+#: How much of a literature answer goes onto the board. A web lookup returns around a
+#: thousand characters; four of those would be a quarter of JEV's whole 32K context spent on
+#: prose. The full text and its citations are kept in the run bundle, where length costs
+#: nothing and a reader can check the source.
+LITERATURE_EXCERPT_CHARS = 420
+
 NEAR_SHARE = 0.45
 COMPETING_SHARE = 0.35
 
@@ -136,6 +142,10 @@ class CandidateEvidence:
     atp_production_share: float
     essential: bool | None = None
     fseof_slope: float | None = None
+    #: Change in product flux CMM measured when this reaction was forced on, from an
+    #: ``amplification_screen``. ``None`` until that scan has run.
+    amplification_gain: float | None = None
+    design_note: str = ""
     literature: str = ""
     citations: tuple[str, ...] = ()
 
@@ -180,12 +190,53 @@ class CandidateEvidence:
             parts.append(
                 f"FSEOF: flux {direction} ({self.fseof_slope:+.3g}) as product is forced up"
             )
+        if self.amplification_gain is not None:
+            if self.amplification_gain > 1e-6:
+                parts.append(
+                    f"MEASURED: forcing flux through it raises the product by "
+                    f"{self.amplification_gain:+.4g}"
+                )
+            elif self.amplification_gain < -1e-6:
+                parts.append(
+                    f"measured: forcing flux through it LOWERS the product by "
+                    f"{self.amplification_gain:+.4g}"
+                )
+            else:
+                parts.append(
+                    "measured: forcing flux through it changes the product by 0"
+                )
+        if self.design_note:
+            parts.append(self.design_note)
         if self.subsystem:
             parts.append(f"subsystem {self.subsystem}")
         if self.literature:
-            parts.append(f"literature: {self.literature}")
+            excerpt = " ".join(self.literature.split())
+            if len(excerpt) > LITERATURE_EXCERPT_CHARS:
+                excerpt = excerpt[: LITERATURE_EXCERPT_CHARS - 1].rstrip() + "\u2026"
+            cited = f" [{len(self.citations)} sources]" if self.citations else ""
+            parts.append(f"published evidence{cited}: {excerpt}")
         head = f"{self.name or self.reaction_id}"
         return f"{head} — " + "; ".join(parts)
+
+    def to_label(self) -> str:
+        """The short form that names this option in the answer space.
+
+        A ``choice`` question's criteria define what may be answered; the evidence for
+        weighing the options belongs in ``state.records``, which is the pattern the Decisions
+        API is built around. Sending the whole record in both places duplicated 40% of the
+        payload for nothing: measured against the live service on the same board, 3050 input
+        tokens with the record repeated against 2500 with only a label, the same reaction
+        chosen and the same shape of distribution either way. The saving is not the point on
+        its own — the 32K context is the binding constraint on how many reactions fit on the
+        board, so it buys candidates.
+        """
+
+        label = self.name or self.reaction_id
+        return (
+            f"{label}."
+            if not self.design_note
+            else f"{label}; the strain designer names it."
+        )
 
     def to_row(self) -> dict[str, object]:
         """Flat export row for the run bundle."""
@@ -364,45 +415,54 @@ def build_candidates(
     reference_fluxes: Mapping[str, float],
     current_fluxes: Mapping[str, float],
     excluded: Iterable[str] = (),
+    pinned: Iterable[str] = (),
     limit: int = 24,
 ) -> tuple[CandidateEvidence, ...]:
     """Build the board for one tick: the reactions JEV may act on, shortlisted.
 
-    A shortlist is needed because the state has to fit a 32K context, and it is computed by
-    CMM rather than asked of JEV so the same model and flux state always produce the same
-    board.
+        A shortlist is needed because the state has to fit a 32K context, and it is computed by
+        CMM rather than asked of JEV so the same model and flux state always produce the same
+        board.
 
-    **The board is composed from three slates, not one ranking.** A single blended score does
-    not work, and the failure is instructive: ranked on proximity alone, an anaerobic
-    succinate board contains only the succinate branch, and every move is "switch on another
-    step of a pathway that has no reason to carry flux". Ranked on flux magnitude alone, it
-    contains the respiratory chain and glycolysis, none of which can reach the product. Real
-    strain design needs both halves — open the route *and* close what competes with it — so
-    the board reserves places for each:
+        **The board is composed from three slates, not one ranking.** A single blended score does
+        not work, and the failure is instructive: ranked on proximity alone, an anaerobic
+        succinate board contains only the succinate branch, and every move is "switch on another
+        step of a pathway that has no reason to carry flux". Ranked on flux magnitude alone, it
+        contains the respiratory chain and glycolysis, none of which can reach the product. Real
+        strain design needs both halves — open the route *and* close what competes with it — so
+        the board reserves places for each:
 
-    ``near``
-        Closest to the product through the metabolite graph. These are the moves that open
-        the route.
-    ``competing``
-        Reactions feeding the carbon byproducts the strain is currently secreting, found by
-        the same graph walk run backwards from each byproduct exchange. In anaerobic
-        *E. coli* these are the ethanol, acetate and formate branches, and closing them is the
-        textbook way to push carbon into succinate. Neither proximity nor flux magnitude
-        surfaces them: ``ALCD2x`` is five steps from ``EX_succ_e`` and carries less flux than
-        glycolysis, which cannot be touched at all.
-    ``carriers``
-        The remaining largest flux carriers, so the board is never blind to where the carbon
-        actually is.
+        ``near``
+            Closest to the product through the metabolite graph. These are the moves that open
+            the route.
+        ``competing``
+            Reactions feeding the carbon byproducts the strain is currently secreting, found by
+            the same graph walk run backwards from each byproduct exchange. In anaerobic
+            *E. coli* these are the ethanol, acetate and formate branches, and closing them is the
+            textbook way to push carbon into succinate. Neither proximity nor flux magnitude
+            surfaces them: ``ALCD2x`` is five steps from ``EX_succ_e`` and carries less flux than
+            glycolysis, which cannot be touched at all.
+        ``carriers``
+            The remaining largest flux carriers, so the board is never blind to where the carbon
+            actually is.
 
-    The three slates are filled in that order, deduplicated, and truncated to ``limit``.
+    ``pinned``
+            Reactions named by a deterministic strain designer after a ``strain_design_scan``.
+            These take their places first, because the slates above cannot reach them: the
+            winning anaerobic succinate design deletes ``LDH_D`` and ``THD2``, neither of which
+            carries any flux in the wild type, so neither appears near the product, near a
+            secreted byproduct, or among the flux carriers. They are escape routes, and a board
+            built from where the flux is today cannot see them.
 
-    **Only reactions with a gene association are candidates**, whenever the model carries GPRs
-    at all. A move has to be something a laboratory could actually make, and an exchange
-    reaction, a biomass pseudo-reaction, an ATP maintenance term or a passive diffusion step
-    has no gene to delete or over-express. On ``e_coli_core`` this removes 26 of 95 reactions
-    — every exchange, ``ATPM``, the biomass reaction and four gene-less transporters — and
-    keeps every enzyme. Without the filter the board fills with "knock out acetate exchange",
-    which raises the product on paper and cannot be built.
+        The slates are filled in that order, deduplicated, and truncated to ``limit``.
+
+        **Only reactions with a gene association are candidates**, whenever the model carries GPRs
+        at all. A move has to be something a laboratory could actually make, and an exchange
+        reaction, a biomass pseudo-reaction, an ATP maintenance term or a passive diffusion step
+        has no gene to delete or over-express. On ``e_coli_core`` this removes 26 of 95 reactions
+        — every exchange, ``ATPM``, the biomass reaction and four gene-less transporters — and
+        keeps every enzyme. Without the filter the board fills with "knock out acetate exchange",
+        which raises the product on paper and cannot be built.
     """
 
     if limit < 2:
@@ -478,10 +538,16 @@ def build_candidates(
         key=by_flux,
     )
 
+    pinned_slate = [
+        evidence[reaction_id]
+        for reaction_id in dict.fromkeys(pinned)
+        if reaction_id in evidence
+    ]
     quota_near = max(1, round(limit * NEAR_SHARE))
     quota_competing = max(1, round(limit * COMPETING_SHARE))
     board: dict[str, CandidateEvidence] = {}
     for slate, quota in (
+        (pinned_slate, limit),
         (near, quota_near),
         (competing, quota_competing),
         (carriers, limit),
@@ -495,12 +561,17 @@ def build_candidates(
             board[candidate.reaction_id] = candidate
             taken += 1
 
-    # Deterministic presentation order: nearest first, then by flux. The order the options
-    # are listed in is part of the question, so it must not depend on dict insertion luck.
+    # Presentation order is part of the question, so it is deterministic and it leads with
+    # the strongest evidence. A reaction a deterministic designer has *proved* forces the
+    # product when deleted outranks one whose only recommendation is sitting two steps away:
+    # ordered by distance alone, the designer's reactions landed at positions 12 to 24 of 24
+    # and the agent, reading from the top, never reached them.
+    pinned_ids = {candidate.reaction_id for candidate in pinned_slate}
     return tuple(
         sorted(
             board.values(),
             key=lambda c: (
+                0 if c.reaction_id in pinned_ids else 1,
                 c.distance_to_product if c.distance_to_product is not None else 10**6,
                 -abs(c.reference_flux),
                 c.reaction_id,
@@ -598,8 +669,25 @@ class ScanCache:
 
     essential: dict[str, bool] = field(default_factory=dict)
     fseof_slopes: dict[str, float] = field(default_factory=dict)
+    #: reaction id -> product-flux change CMM measured when it was forced on, against the
+    #: current design. This is the evidence an agent needs to choose an amplification, and it
+    #: is measured rather than reasoned about: the reaction on the direct route to the product
+    #: is often already saturated, and the one that pays is often a bypass no one would guess.
+    amplification_gains: dict[str, float] = field(default_factory=dict)
     envelope_note: str = ""
     literature: dict[str, tuple[str, tuple[str, ...]]] = field(default_factory=dict)
+    #: reaction id -> what the deterministic strain designer found about it. These are the
+    #: reactions OptKnock and RobustKnock name, and they are forced onto the board because the
+    #: ordinary slates cannot reach them: the winning anaerobic succinate design deletes
+    #: ``LDH_D`` and ``THD2``, which carry no flux at all in the wild type. They are escape
+    #: routes the cell would switch to once the obvious ones are shut, and a board built from
+    #: where the flux is today is structurally blind to them.
+    design_notes: dict[str, str] = field(default_factory=dict)
+    #: The complete designs, best guaranteed product first, as
+    #: ``(method, knockout reaction ids, guaranteed product)``. Kept whole because a design's
+    #: deletions only pay off together — applied one at a time each looks worthless, and an
+    #: agent judging a move by the product change it causes will never assemble one.
+    designs: list[tuple[str, tuple[str, ...], float]] = field(default_factory=list)
     #: LOOK moves already run against the model as it currently stands. Every scan here is
     #: model-wide, not per-reaction — an FSEOF scan reports on the whole network — so "have I
     #: already asked this?" cannot be answered from one candidate's record. Tracking it per
@@ -619,6 +707,10 @@ class ScanCache:
                     candidate,
                     essential=self.essential.get(candidate.reaction_id),
                     fseof_slope=self.fseof_slopes.get(candidate.reaction_id),
+                    amplification_gain=self.amplification_gains.get(
+                        candidate.reaction_id
+                    ),
+                    design_note=self.design_notes.get(candidate.reaction_id, ""),
                     literature=literature,
                     citations=citations,
                 )
@@ -634,7 +726,10 @@ class ScanCache:
 
         self.essential.clear()
         self.fseof_slopes.clear()
+        self.amplification_gains.clear()
         self.envelope_note = ""
+        self.design_notes.clear()
+        self.designs.clear()
         self.completed.clear()
 
     def snapshot(self) -> "ScanCache":
@@ -649,8 +744,11 @@ class ScanCache:
         return ScanCache(
             essential=dict(self.essential),
             fseof_slopes=dict(self.fseof_slopes),
+            amplification_gains=dict(self.amplification_gains),
             envelope_note=self.envelope_note,
             literature=dict(self.literature),
+            design_notes=dict(self.design_notes),
+            designs=list(self.designs),
             completed=set(self.completed),
         )
 
@@ -659,8 +757,11 @@ class ScanCache:
 
         self.essential = dict(snapshot.essential)
         self.fseof_slopes = dict(snapshot.fseof_slopes)
+        self.amplification_gains = dict(snapshot.amplification_gains)
         self.envelope_note = snapshot.envelope_note
         self.literature = dict(snapshot.literature)
+        self.design_notes = dict(snapshot.design_notes)
+        self.designs = list(snapshot.designs)
         self.completed = set(snapshot.completed)
 
     def knows(self, reaction_id: str) -> tuple[bool, bool]:

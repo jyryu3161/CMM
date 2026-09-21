@@ -25,6 +25,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 
 from cmm.jev.actions import (
+    ADOPT_ACTION,
     END_ACTION,
     LOOK_ACTIONS,
     UNDO_ACTION,
@@ -66,8 +67,9 @@ class QuestionSet:
         allow_undo: bool,
         allow_look: bool,
         design_full: bool = False,
+        proven_design: str = "",
     ) -> dict[str, Mapping[str, object]]:
-        """Stage one: which reaction to act on next (or stop, or undo)."""
+        """Stage one: which reaction to act on next (or stop, undo, or adopt a design)."""
 
         raise NotImplementedError
 
@@ -122,6 +124,7 @@ class ProductionV1(QuestionSet):
         allow_undo: bool,
         allow_look: bool,
         design_full: bool = False,
+        proven_design: str = "",
     ) -> dict[str, Mapping[str, object]]:
         if not candidates and not design_full:
             raise ValueError(
@@ -136,9 +139,13 @@ class ProductionV1(QuestionSet):
             # want of room, until the run ended.
             criteria.update(
                 {
-                    candidate.reaction_id: candidate.to_record()
+                    candidate.reaction_id: candidate.to_label()
                     for candidate in candidates
                 }
+            )
+        if proven_design and not design_full:
+            criteria[ADOPT_ACTION.name] = (
+                f"{ADOPT_ACTION.description} The design available is: {proven_design}."
             )
         if allow_undo:
             criteria[UNDO_ACTION.name] = UNDO_ACTION.description
@@ -161,10 +168,15 @@ class ProductionV1(QuestionSet):
         instructions = (
             f"Choose the single reaction to act on next so that flux through {product} "
             f"increases, while the growth rate stays at or above {growth_floor} per hour. "
-            "Each record states the reaction's wild-type flux, its current flux, how many "
-            "steps it sits from the product, and what it does to the ATP and redox pools. "
+            "The evidence for each option is the record with the same id in the state "
+            "above: its wild-type flux, its current flux, how many steps it sits from the "
+            "product, and what it does to the ATP and redox pools. "
             "Prefer a reaction whose change would redirect carbon or reducing power toward "
-            "the product over one that is merely large. "
+            "the product over one that is merely large. A record saying OptKnock or "
+            "RobustKnock deletes the reaction is the strongest evidence on the board: those "
+            "are proofs that the deletion forces the product at maximum growth, and several "
+            "of them name reactions carrying no flux today, which the cell would switch to "
+            "once the obvious routes are shut. "
         )
         if allow_look:
             instructions += (
@@ -205,6 +217,10 @@ class ProductionV1(QuestionSet):
                 and not (
                     action.name == "fseof_scan" and candidate.fseof_slope is not None
                 )
+                and not (
+                    action.name == "amplification_screen"
+                    and candidate.amplification_gain is not None
+                )
             )
         criteria = {action.name: action.description for action in actions}
         if len(criteria) < 2:
@@ -230,7 +246,7 @@ class ProductionV1(QuestionSet):
                 (
                     f'Choose what to do to reaction "{rid}" so that flux through {product} '
                     f"increases while growth stays at or above {growth_floor} per hour. "
-                    f"Its record reads: {candidate.to_record()}.{gap}"
+                    f"Its evidence is the record with id {rid} in the state above.{gap}"
                 ),
                 criteria,
             ),
@@ -281,16 +297,26 @@ def get_question_set(version: str = DEFAULT_QUESTION_SET) -> QuestionSet:
 def research_query(candidate: CandidateEvidence, product: str, organism: str) -> str:
     """The web-research prompt for one candidate.
 
-    Deliberately narrow: it asks for published evidence about one intervention on one
-    reaction for one product. A broad question returns a survey, and a survey is the kind of
-    text that crowds a 32K context without changing a decision.
+    Deliberately narrow, and deliberately two-sided. An early version asked only what raises
+    the product, and a source that answers only that question is worse than none: the model
+    already predicts the yield, and what it cannot predict is the fitness cost, the
+    regulatory response or the byproduct that a paper would report. So the prompt asks for
+    the penalty as explicitly as the benefit, and asks for silence to be reported as silence
+    rather than filled in.
     """
 
     gene_hint = f" (genes {', '.join(candidate.genes)})" if candidate.genes else ""
     return (
-        f"In metabolic engineering of {organism}, what is the published evidence on "
-        f"modifying the reaction {candidate.reaction_id}{gene_hint} — "
-        f"{candidate.name} — to increase production of {product}? "
-        "State whether knockout, knockdown or overexpression has been reported, and what "
-        "effect it had. If there is no published work on this specific step, say so."
+        f"In metabolic engineering of {organism}, what has been published about modifying "
+        f"the reaction {candidate.reaction_id}{gene_hint} \u2014 {candidate.name} \u2014 to "
+        f"increase production of {product}?\n"
+        "Answer these three things separately and briefly:\n"
+        "1. Has knockout, knockdown or overexpression of this step been reported, and what "
+        "happened to the product?\n"
+        "2. What was the cost? State any reported growth defect, fitness burden, reduced "
+        "biomass yield, or dependence on a supplement or a specific medium.\n"
+        "3. Were there side effects a flux model would not predict \u2014 byproduct "
+        "accumulation, regulatory compensation, protein burden, toxicity?\n"
+        "If a point has no published work behind it, say so for that point rather than "
+        "generalising from a related enzyme or a different organism."
     )

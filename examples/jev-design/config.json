@@ -8,8 +8,16 @@
   "condition": {
     "name": "glucose_anaerobic",
     "bounds": [
-      {"reaction_id": "EX_glc__D_e", "lower_bound": -10.0, "upper_bound": 1000.0},
-      {"reaction_id": "EX_o2_e", "lower_bound": 0.0, "upper_bound": 1000.0}
+      {
+        "reaction_id": "EX_glc__D_e",
+        "lower_bound": -10.0,
+        "upper_bound": 1000.0
+      },
+      {
+        "reaction_id": "EX_o2_e",
+        "lower_bound": 0.0,
+        "upper_bound": 1000.0
+      }
     ],
     "notes": "Glucose uptake 10 mmol gDW^-1 h^-1, oxygen uptake closed. Same condition as the SC-01 succinate example, so the two runs are comparable."
   },
@@ -26,5 +34,9 @@
   "max_decisions": 400,
   "max_cost_usd": 1.0,
   "seed": 0,
-  "overwrite": true
+  "overwrite": true,
+  "seed_with_strain_design": true,
+  "run_baseline_comparison": true,
+  "design_max_knockouts": 3,
+  "design_max_solutions": 5
 }

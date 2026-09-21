@@ -210,6 +210,19 @@ def _run_jev(args: argparse.Namespace) -> int:
 
     result = run_jev_design(config, on_tick=None if args.quiet else announce)
     summary = result.summary()
+    if not args.quiet and result.baselines:
+        # What the established methods give on the same problem, printed next to the run
+        # rather than left in a CSV, because a design with nothing to compare it to is not a
+        # result a reader can weigh.
+        print("\nSame problem, same growth floor, every design scored the same way:")
+        frame = result.baselines_frame()
+        for _, row in frame.iterrows():
+            flag = "" if row["deterministic"] else "  (not deterministic)"
+            print(
+                f"  {row['method']:38s} product {row['product_flux']:9.4f}  "
+                f"growth {row['growth']:7.4f}{flag}"
+            )
+        print()
     print(
         json.dumps(
             {
@@ -222,6 +235,7 @@ def _run_jev(args: argparse.Namespace) -> int:
                 "best_design": summary["best_design"],
                 "n_ticks": summary["n_ticks"],
                 "usage": summary["usage"],
+                "baseline_comparison": summary["baseline_comparison"],
                 # Stated on every run: the CMM solves repeat, the agent's choices need not.
                 "notes": summary["notes"],
             },
