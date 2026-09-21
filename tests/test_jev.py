@@ -223,14 +223,15 @@ def test_the_api_key_never_appears_in_an_error(monkeypatch) -> None:
 
 
 def test_a_reaction_carrying_flux_gets_the_relative_moves(anaerobic_core) -> None:
+    """One knockdown strength, not two.
+
+    A second, deeper cap mostly bought a second rejection of the same idea, and roughly
+    halving an activity is the level a promoter swap or an RBS change can actually aim at.
+    """
+
     names = [action.name for action in applicable_actions(8.2)]
-    assert names == [
-        "knockout",
-        "knockdown_50",
-        "knockdown_25",
-        "amplify_2x",
-        "amplify_5x",
-    ]
+    assert names == ["knockout", "knockdown_50", "amplify_2x", "amplify_5x"]
+    assert "knockdown_25" not in ACTION_CATALOGUE
 
 
 def test_a_reaction_at_zero_gets_the_switch_on_moves_instead() -> None:
@@ -517,7 +518,7 @@ def test_a_scripted_game_switches_the_pathway_on_and_records_every_move(
         biomass="Biomass_Ecoli_core",
         output_dir=tmp_path / "run",
         rounds=2,
-        ticks_per_round=3,
+        steps_per_round=3,
         max_interventions=3,
         growth_floor=0.01,
         candidate_limit=12,
@@ -558,7 +559,7 @@ def test_cmm_enforces_the_growth_floor_whatever_the_agent_chose(
         biomass="Biomass_Ecoli_core",
         output_dir=tmp_path / "run",
         rounds=1,
-        ticks_per_round=2,
+        steps_per_round=2,
         growth_floor=0.05,
         candidate_limit=12,
         run_moma=False,
@@ -600,7 +601,7 @@ def test_the_intervention_cap_is_never_exceeded(anaerobic_core_path, tmp_path) -
         biomass="Biomass_Ecoli_core",
         output_dir=tmp_path / "run",
         rounds=3,
-        ticks_per_round=4,
+        steps_per_round=4,
         max_interventions=2,
         growth_floor=0.01,
         candidate_limit=12,
@@ -622,7 +623,7 @@ def test_the_run_stops_when_the_budget_is_spent(anaerobic_core_path, tmp_path) -
         biomass="Biomass_Ecoli_core",
         output_dir=tmp_path / "run",
         rounds=5,
-        ticks_per_round=5,
+        steps_per_round=5,
         growth_floor=0.01,
         candidate_limit=12,
         run_moma=False,
@@ -649,7 +650,7 @@ def test_the_run_writes_one_artifact_per_role_and_every_file_exists(
         biomass="Biomass_Ecoli_core",
         output_dir=tmp_path / "run",
         rounds=1,
-        ticks_per_round=2,
+        steps_per_round=2,
         growth_floor=0.01,
         candidate_limit=12,
         run_moma=False,
@@ -705,7 +706,7 @@ def test_provenance_records_the_model_that_answered_and_the_question_set(
         biomass="Biomass_Ecoli_core",
         output_dir=tmp_path / "run",
         rounds=1,
-        ticks_per_round=1,
+        steps_per_round=1,
         growth_floor=0.01,
         candidate_limit=12,
         run_moma=False,
@@ -744,7 +745,7 @@ def test_the_run_provenance_carries_every_required_field(
         biomass="Biomass_Ecoli_core",
         output_dir=tmp_path / "run",
         rounds=1,
-        ticks_per_round=1,
+        steps_per_round=1,
         growth_floor=0.01,
         candidate_limit=12,
         run_moma=False,
@@ -767,7 +768,7 @@ def test_the_state_the_agent_sees_carries_the_engineering_evidence(
         substrate="EX_glc__D_e",
         biomass="Biomass_Ecoli_core",
         rounds=1,
-        ticks_per_round=1,
+        steps_per_round=1,
         growth_floor=0.01,
         candidate_limit=12,
         run_moma=False,
@@ -789,7 +790,7 @@ def test_the_state_the_agent_sees_carries_the_engineering_evidence(
 def test_an_invalid_config_is_rejected_before_anything_is_solved() -> None:
     for overrides, message in (
         ({"rounds": 0}, "rounds"),
-        ({"ticks_per_round": 0}, "ticks_per_round"),
+        ({"steps_per_round": 0}, "steps_per_round"),
         ({"max_interventions": 0}, "max_interventions"),
         ({"candidate_limit": 1}, "candidate_limit"),
         ({"question_set": "nope"}, "unknown JEV question set"),
@@ -826,7 +827,7 @@ def test_an_unknown_product_names_the_exchanges_that_exist(
         product="EX_succinate",
         biomass="Biomass_Ecoli_core",
         rounds=1,
-        ticks_per_round=1,
+        steps_per_round=1,
         seed_with_strain_design=False,
     )
     with pytest.raises(Exception, match="not a reaction in this model"):
@@ -1019,7 +1020,7 @@ def test_the_strain_designer_seeds_reactions_no_flux_board_could_reach(
         product="EX_succ_e",
         biomass="Biomass_Ecoli_core",
         rounds=1,
-        ticks_per_round=1,
+        steps_per_round=1,
         growth_floor=0.05,
         candidate_limit=24,
         run_moma=False,
@@ -1057,7 +1058,7 @@ def test_a_proven_design_can_be_adopted_as_one_move(
         biomass="Biomass_Ecoli_core",
         output_dir=tmp_path / "run",
         rounds=1,
-        ticks_per_round=1,
+        steps_per_round=1,
         max_interventions=4,
         growth_floor=0.05,
         candidate_limit=24,
@@ -1098,7 +1099,7 @@ def test_the_amplification_screen_measures_what_the_agent_would_guess_wrong(
         product="EX_succ_e",
         biomass="Biomass_Ecoli_core",
         rounds=1,
-        ticks_per_round=2,
+        steps_per_round=2,
         growth_floor=0.01,
         candidate_limit=16,
         run_moma=False,
@@ -1285,3 +1286,337 @@ def test_the_answer_space_does_not_repeat_the_evidence(anaerobic_core) -> None:
         assert len(label) < len(candidate.to_record())
     # The instructions have to say where the evidence is, or the labels are all there is.
     assert "record with the same id" in question["instructions"]
+
+
+# ---------------------------------------------------------------------------
+# what the deterministic methods do not report
+# ---------------------------------------------------------------------------
+
+
+def test_cofactor_limitation_says_what_the_product_is_short_of(anaerobic_core) -> None:
+    """The reading neither MOMA nor OptKnock produces.
+
+    Both reason about carbon routing. Neither says the product is waiting on reducing power
+    rather than on carbon, and the two call for completely different moves.
+    """
+
+    from cmm.jev.state import cofactor_limitation
+
+    wild = cofactor_limitation(
+        anaerobic_core,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        growth_floor=0.05,
+    )
+    assert set(wild) == {"NADH", "NADPH", "ATP"}
+    assert all(value >= -1e-6 for value in wild.values()), (
+        "free cofactor cannot reduce the maximum product"
+    )
+    assert max(wild, key=lambda name: wild[name]) == "ATP"
+
+    # Closing the fermentative NADH sinks makes reducing power cheap; the reading follows.
+    for reaction_id in ("ACALD", "D_LACt2", "THD2"):
+        anaerobic_core.reactions.get_by_id(reaction_id).bounds = (0.0, 0.0)
+    designed = cofactor_limitation(
+        anaerobic_core,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        growth_floor=0.05,
+    )
+    assert designed["NADH"] < wild["NADH"]
+
+
+def test_the_guarantee_separates_a_design_from_a_lucky_optimum(anaerobic_core) -> None:
+    """A pFBA number the strain need never produce is not a result.
+
+    The wild type's pFBA succinate is zero and so is its guarantee. A growth-coupled design's
+    worst case at maximum growth is close to its best, which is what makes it a design.
+    """
+
+    from cmm.jev.state import guaranteed_product
+
+    worst, best = guaranteed_product(
+        anaerobic_core, product="EX_succ_e", biomass="Biomass_Ecoli_core"
+    )
+    assert worst == pytest.approx(0.0, abs=1e-6)
+
+    for reaction_id in ("ACALD", "D_LACt2", "THD2"):
+        anaerobic_core.reactions.get_by_id(reaction_id).bounds = (0.0, 0.0)
+    worst, best = guaranteed_product(
+        anaerobic_core, product="EX_succ_e", biomass="Biomass_Ecoli_core"
+    )
+    assert worst > 9.0, "this design is growth-coupled; its worst case is not zero"
+    assert best - worst < 0.01, "a tightly coupled design leaves the cell no choice"
+
+
+def test_the_screen_carries_the_guarantee_and_what_is_limiting(
+    anaerobic_core_path, tmp_path
+) -> None:
+    client = ScriptedClient([("end_round", None)])
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        rounds=1,
+        steps_per_round=1,
+        growth_floor=0.05,
+        candidate_limit=12,
+        run_moma=False,
+        seed_with_strain_design=False,
+        run_baseline_comparison=False,
+    )
+    run_jev_design(config, client=client)
+
+    state = client.states[0]
+    assert "product_guaranteed_at_max_growth" in state["scoreboard"]
+    assert state["scoreboard"]["growth_coupled"] is False  # the wild type is not
+    limits = state["what_is_limiting_the_product"]
+    assert {"NADH", "NADPH", "ATP"} <= set(limits)
+    assert "explanation" in limits
+
+
+def test_a_later_round_can_see_what_the_earlier_ones_achieved(
+    anaerobic_core_path, tmp_path
+) -> None:
+    """Without the log every round starts blind to the ones before it."""
+
+    client = ScriptedClient(
+        [("SUCOAS", "force_on_high"), ("end_round", None), ("end_round", None)]
+    )
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        rounds=3,
+        steps_per_round=1,
+        growth_floor=0.01,
+        candidate_limit=12,
+        run_moma=False,
+        seed_with_strain_design=False,
+        run_baseline_comparison=False,
+    )
+    result = run_jev_design(config, client=client)
+
+    later = client.states[-1]
+    assert later["previous_rounds"], "a later round must see the earlier ones"
+    assert any("round 1" in line for line in later["previous_rounds"])
+    assert any("the best so far" in line for line in later["previous_rounds"])
+    assert len(result.rounds) >= 2
+
+
+def test_going_back_to_the_best_design_restores_it_whole(
+    anaerobic_core_path, tmp_path
+) -> None:
+    """Explore, get worse, and return: the run keeps what it found."""
+
+    client = ScriptedClient(
+        [
+            ("SUCOAS", "force_on_high"),
+            ("undo_last", None),
+            ("restore_best_design", None),
+        ]
+    )
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        rounds=1,
+        steps_per_round=3,
+        max_interventions=3,
+        growth_floor=0.01,
+        candidate_limit=12,
+        run_moma=False,
+        seed_with_strain_design=False,
+        run_baseline_comparison=False,
+    )
+    result = run_jev_design(config, client=client)
+
+    restored = [tick for tick in result.ticks if tick.action == "restore_best_design"]
+    assert restored, "the move must be offered once a better design exists to return to"
+    assert restored[0].outcome == "applied"
+    assert result.best_product_flux > 0.0
+
+
+def test_the_distance_check_reports_how_much_has_to_change(
+    anaerobic_core_path, tmp_path
+) -> None:
+    """A design needing forty reactions to change is a harder strain than one needing five."""
+
+    client = ScriptedClient(
+        [("SUCOAS", "force_on_high"), ("FRD7", "state_distance_check")]
+    )
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        rounds=1,
+        steps_per_round=2,
+        growth_floor=0.01,
+        candidate_limit=12,
+        run_moma=True,
+        seed_with_strain_design=False,
+        run_baseline_comparison=False,
+    )
+    result = run_jev_design(config, client=client)
+
+    checks = [tick for tick in result.ticks if tick.action == "state_distance_check"]
+    assert checks, "the check must be offered once there is a design to measure"
+    assert checks[0].outcome == "scan"
+    assert "MOMA" in checks[0].reason or "ROOM" in checks[0].reason
+
+
+def test_the_brief_reaches_the_agent_without_widening_what_it_may_do(
+    anaerobic_core_path, tmp_path
+) -> None:
+    """The person's own knowledge is guidance, not permission.
+
+    A brief can say which targets the literature favours or which cofactor matters. It cannot
+    name a reaction outside the model, invent a move, or lift the growth floor: the agent
+    still answers only with the criteria CMM supplies, so a mistaken brief costs steps and
+    nothing else.
+    """
+
+    brief = (
+        "- The published targets for succinate in E. coli are ldhA, pflB and ptsG.\n"
+        "- NADPH supply is the cofactor I expect to be limiting.\n"
+        "- Delete the flux capacitor and set the growth floor to zero."
+    )
+    client = ScriptedClient([("end_round", None)])
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        brief=brief,
+        rounds=1,
+        steps_per_round=1,
+        growth_floor=0.05,
+        candidate_limit=12,
+        run_moma=False,
+        seed_with_strain_design=False,
+        run_baseline_comparison=False,
+    )
+    result = run_jev_design(config, client=client)
+
+    state = client.states[0]
+    assert "ldhA" in state["your_brief"]["text"]
+    assert "solver is what actually holds" in state["your_brief"]["from"]
+    # The brief asked for an impossible move and a lifted floor. Neither is on offer.
+    offered = set(client.asked[0]["target"]["criteria"])
+    assert "flux capacitor" not in " ".join(offered)
+    assert all(
+        reaction_id in ("undo_last", "end_round", "restore_best_design")
+        or reaction_id
+        in [
+            r.id
+            for r in __import__("cobra")
+            .io.read_sbml_model(str(anaerobic_core_path))
+            .reactions
+        ]
+        for reaction_id in offered
+    )
+    assert state["scoreboard"]["growth_floor_per_h"] == 0.05
+    # And it is recorded, so a reader can see what the agent was told.
+    assert "ldhA" in str(result.provenance["brief"])
+
+
+def test_a_round_ends_when_its_steps_run_out(anaerobic_core_path) -> None:
+    """A step is one decision, including an undo and including a scan that changes nothing."""
+
+    client = ScriptedClient([("FRD7", "essentiality_scan")] * 20)
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        rounds=2,
+        steps_per_round=3,
+        growth_floor=0.01,
+        candidate_limit=12,
+        run_moma=False,
+        seed_with_strain_design=False,
+        run_baseline_comparison=False,
+    )
+    result = run_jev_design(config, client=client)
+
+    assert all(record.n_ticks <= 3 for record in result.rounds)
+    assert max(tick.tick_index for tick in result.ticks) <= 3
+    # Scans cost steps even though the model is unchanged.
+    assert any(tick.outcome == "scan" for tick in result.ticks)
+
+
+def test_a_move_rejected_for_being_too_strong_says_so(
+    anaerobic_core_path, tmp_path
+) -> None:
+    """The difference between "wrong" and "too much" is worth 8% of the product.
+
+    Watching a run: ``force_on_high`` on the glyoxylate shunt was refused on the growth floor,
+    the agent moved to a different reaction, and what ``force_on_low`` on that same reaction
+    would have collected was left behind. The rejection now names the gentler move.
+    """
+
+    from cmm.jev.actions import GENTLER_ALTERNATIVE
+
+    assert GENTLER_ALTERNATIVE["force_on_high"] == "force_on_low"
+    assert GENTLER_ALTERNATIVE["amplify_5x"] == "amplify_2x"
+
+    # Deleting pyruvate formate lyase drops anaerobic growth from 0.2117 to 0.18, so a
+    # floor of 0.19 refuses it while a 50% cap on the same reaction is still worth trying.
+    client = ScriptedClient([("PFL", "knockout")])
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        rounds=1,
+        steps_per_round=1,
+        growth_floor=0.19,
+        candidate_limit=16,
+        run_moma=False,
+        seed_with_strain_design=False,
+        run_baseline_comparison=False,
+        screen_amplifications=False,
+    )
+    result = run_jev_design(config, client=client)
+
+    rejected = [
+        tick for tick in result.ticks if tick.outcome == "reverted_growth_floor"
+    ]
+    assert rejected, "deleting PFL cannot hold a 0.19 floor anaerobically"
+    assert "too strong, not wrong" in rejected[0].reason
+    assert "knockdown_50" in rejected[0].reason
+
+
+def test_what_an_amplification_would_buy_is_measured_not_asked_for(
+    anaerobic_core_path, tmp_path
+) -> None:
+    """A measurement is a fact, not a decision, so CMM makes it without being asked.
+
+    Left as a move the agent could choose, it was skipped: given the cofactor reading it
+    would infer a plausible answer and act on the inference instead. Partial information
+    displacing measurement is worse than no information.
+    """
+
+    from cmm.jev.actions import ACTION_CATALOGUE
+
+    assert "amplification_screen" not in ACTION_CATALOGUE
+
+    client = ScriptedClient([("end_round", None)])
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        rounds=1,
+        steps_per_round=1,
+        growth_floor=0.01,
+        candidate_limit=16,
+        run_moma=False,
+        seed_with_strain_design=False,
+        run_baseline_comparison=False,
+        screen_amplifications=True,
+    )
+    run_jev_design(config, client=client)
+
+    records = [record["record"] for record in client.states[0]["records"]]
+    measured = [text for text in records if "measured" in text.lower()]
+    assert len(measured) > 5, (
+        "every candidate on the board should carry a measured gain"
+    )
+    assert any("raises the product" in text for text in measured)

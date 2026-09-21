@@ -53,6 +53,8 @@ from cmm.jev.actions import (
     ACTION_CATALOGUE,
     ADOPT_ACTION,
     END_ACTION,
+    GENTLER_ALTERNATIVE,
+    RESTORE_ACTION,
     UNDO_ACTION,
     ActionNotApplicable,
     Intervention,
@@ -79,6 +81,8 @@ from cmm.jev.state import (
     ScanCache,
     build_candidates,
     cofactor_balance,
+    cofactor_limitation,
+    guaranteed_product,
 )
 
 #: How many times the identical move may land the identical way before the round is cut
@@ -115,9 +119,14 @@ class JevWorkflowError(RuntimeError):
 class JevConfig:
     """A complete, serializable invocation of a JEV design run.
 
-    ``rounds`` x ``ticks_per_round`` bounds the number of moves; ``max_interventions`` bounds
-    how many changes may be active at once, which is the quantity a wet-lab reader cares
-    about — a design needing twelve edits is not the same proposal as one needing three.
+    Two budgets, and they mean different things. ``rounds`` x ``steps_per_round`` bounds how
+    long the agent may *play*: every decision costs one step, including an undo and including
+    a scan that changes nothing. ``max_interventions`` bounds how many changes may be active
+    at once, which is the quantity a wet-lab reader cares about — a design needing twelve
+    edits is not the same proposal as one needing three. A long game and a small design are
+    the usual combination: steps are cheap and edits are not.
+
+    A round ends when its steps run out or the agent chooses ``end_round``.
     """
 
     model_path: str | Path
@@ -129,10 +138,23 @@ class JevConfig:
     medium: Medium | str | None = None
     condition: Condition | None = None
     organism: str = "Escherichia coli"
+    #: What the person running this knows and the model does not: published targets for this
+    #: product, a growth rate the strain has to hold, a cofactor they believe is decisive, a
+    #: reaction they want left alone. Shown to the agent under ``your_brief`` on every step.
+    #:
+    #: It is **guidance, not permission**. It cannot widen the move vocabulary, name a
+    #: reaction outside the model, or lift the growth floor CMM enforces — the agent still
+    #: answers only with the criteria this package supplies, so the worst a mistaken brief can
+    #: do is waste steps.
+    brief: str = ""
 
     # -- the game -----------------------------------------------------------
     rounds: int = 5
-    ticks_per_round: int = 6
+    #: Steps the agent may spend in one round. **Every** decision costs one — an intervention,
+    #: an undo, a scan — so this is the length of the game, not a count of edits. The design
+    #: is bounded separately by ``max_interventions``, which is the number a laboratory would
+    #: have to build. A long round is cheap: a step is two calls, about 0.6 s and $0.00016.
+    steps_per_round: int = 40
     max_interventions: int = 4
     growth_floor: float = 0.05
     candidate_limit: int = 24
@@ -153,6 +175,19 @@ class JevConfig:
     #: problem, every design evaluated the same way. An agent result with nothing to compare
     #: it to is not a result.
     run_baseline_comparison: bool = True
+    #: Measure, every tick, how much more product one extra unit of NADH, NADPH or ATP would
+    #: buy. Three extra LPs. This is the reading neither MOMA nor OptKnock reports, and it is
+    #: usually what decides whether the next move should route carbon or supply a cofactor.
+    measure_cofactor_limits: bool = True
+    #: Measure, every tick, the worst product the design could give while growing as fast as
+    #: it can. A design whose worst case is zero is not a design, however good its pFBA
+    #: number looks. Loopless, so it costs one FVA solve.
+    measure_guaranteed_product: bool = True
+    #: Recompute, whenever the design changes, what forcing flux through each reaction on the
+    #: board would do to the product. One pFBA per candidate — about a second for a board of
+    #: 24 on ``e_coli_core``, and the single most useful thing on the screen. Turn it off for
+    #: a genome-scale model where a board of solves is not cheap.
+    screen_amplifications: bool = True
 
     # -- the agent ----------------------------------------------------------
     jev_model: str = "typesafe/jev-1.13"
@@ -183,8 +218,8 @@ class JevConfig:
             raise ValueError("product must not be empty")
         if self.rounds < 1:
             raise ValueError("rounds must be at least 1")
-        if self.ticks_per_round < 1:
-            raise ValueError("ticks_per_round must be at least 1")
+        if self.steps_per_round < 1:
+            raise ValueError("steps_per_round must be at least 1")
         if self.max_interventions < 1:
             raise ValueError("max_interventions must be at least 1")
         if self.growth_floor < 0:
@@ -238,8 +273,9 @@ class JevConfig:
             "substrate": self.substrate,
             "biomass": self.biomass,
             "organism": self.organism,
+            "brief": self.brief,
             "rounds": self.rounds,
-            "ticks_per_round": self.ticks_per_round,
+            "steps_per_round": self.steps_per_round,
             "max_interventions": self.max_interventions,
             "growth_floor": self.growth_floor,
             "candidate_limit": self.candidate_limit,
@@ -248,6 +284,9 @@ class JevConfig:
             "design_max_solutions": self.design_max_solutions,
             "seed_with_strain_design": self.seed_with_strain_design,
             "run_baseline_comparison": self.run_baseline_comparison,
+            "measure_cofactor_limits": self.measure_cofactor_limits,
+            "measure_guaranteed_product": self.measure_guaranteed_product,
+            "screen_amplifications": self.screen_amplifications,
             "run_moma": self.run_moma,
             "jev_model_requested": self.jev_model,
             "question_set": self.question_set,
@@ -493,6 +532,16 @@ class _Board:
     #: Lines shown to the agent under ``notes`` in the state. Not history and not evidence
     #: about one reaction: facts about the situation it is now in.
     state_notes: list[str] = field(default_factory=list)
+    #: One line per completed round, shown to the agent so a later round can either try
+    #: something different or go back to what worked. Without it every round starts blind to
+    #: what the ones before it achieved.
+    round_log: list[str] = field(default_factory=list)
+    #: The best design the run has seen, and what it scored, so ``restore_best_design`` has
+    #: somewhere to go back to.
+    best_snapshot: tuple[Intervention, ...] = ()
+    best_score: float = float("-inf")
+    #: True when the design has changed since the amplification gains were last measured.
+    screen_stale: bool = True
     #: reaction id -> the change in product flux measured when that intervention was applied.
     #: Shown next to each active intervention so dead weight is visible: an intervention that
     #: bought nothing still occupies one of the design's places, and withdrawing it is a real
@@ -512,6 +561,7 @@ class _Board:
         reaction.bounds = (intervention.lower_bound, intervention.upper_bound)
         self.interventions.append(intervention)
         self.scans.invalidate()
+        self.screen_stale = True
 
     def undo(self) -> Intervention | None:
         if not self.interventions:
@@ -524,6 +574,7 @@ class _Board:
         # again. Clearing them here made the agent re-run the same scan every tick.
         if self.scan_stack:
             self.scans.restore(self.scan_stack.pop())
+        self.screen_stale = True
         return intervention
 
     def record_failure(self, reaction_id: str, action_name: str) -> None:
@@ -554,6 +605,16 @@ class _Board:
         return all(
             action.name in tried for action in applicable_actions(reference_flux)
         )
+
+    def restore(self, design: Sequence[Intervention]) -> None:
+        """Replace the current design with ``design``, wholesale."""
+
+        while self.interventions:
+            self.undo()
+        for intervention in design:
+            self.apply(intervention)
+        self.contribution.clear()
+        self.clear_failures()
 
     def active_labels(self) -> tuple[str, ...]:
         labels = []
@@ -697,7 +758,7 @@ def run_jev_design(
         last_signature: tuple[object, ...] | None = None
         repeats = 0
 
-        for tick_index in range(1, config.ticks_per_round + 1):
+        for tick_index in range(1, config.steps_per_round + 1):
             if _budget_exhausted(agent, config):
                 notes.append(
                     f"stopped in round {round_index}: the agent budget was reached "
@@ -751,6 +812,11 @@ def run_jev_design(
                 ended_early = True
                 break
 
+            if config.screen_amplifications and board.screen_stale:
+                _run_scan(board, "amplification_screen", candidates, config)
+                board.screen_stale = False
+                candidates = board.scans.apply(candidates)
+
             state = GameState(
                 product_reaction_id=product,
                 product_flux=current_product,
@@ -761,6 +827,23 @@ def run_jev_design(
                 molar_yield=None,
                 growth_floor=config.growth_floor,
                 balance=cofactor_balance(board.model, current_fluxes),
+                cofactor_limits=(
+                    cofactor_limitation(
+                        board.model,
+                        product=product,
+                        biomass=biomass,
+                        growth_floor=config.growth_floor,
+                    )
+                    if config.measure_cofactor_limits
+                    else {}
+                ),
+                guaranteed=(
+                    guaranteed_product(board.model, product=product, biomass=biomass)
+                    if config.measure_guaranteed_product
+                    else None
+                ),
+                previous_rounds=tuple(board.round_log),
+                brief=config.brief,
                 candidates=candidates,
                 active_interventions=board.active_labels(),
                 ruled_out=tuple(
@@ -781,7 +864,7 @@ def run_jev_design(
                 ),
                 round_index=round_index,
                 tick_index=tick_index,
-                ticks_left=config.ticks_per_round - tick_index,
+                ticks_left=config.steps_per_round - tick_index,
                 interventions_used=len(board.interventions),
                 max_interventions=config.max_interventions,
             )
@@ -832,10 +915,22 @@ def run_jev_design(
                 best_product = current_product
                 best_growth = current_growth
                 best_interventions = tuple(board.interventions)
+                board.best_snapshot = best_interventions
+                board.best_score = current_product
 
             if tick.outcome == "end_round":
                 ended_early = True
                 break
+
+        board.round_log.append(
+            f"round {round_index}: ended with {len(board.interventions)} interventions at "
+            f"{current_product:.4g} product and {current_growth:.4g} growth"
+            + (
+                f" \u2014 the best so far is {board.best_score:.4g}"
+                if board.best_score > current_product + 1e-9
+                else " \u2014 the best so far"
+            )
+        )
 
         acted = any(
             tick.outcome in ("applied", "undone_by_agent")
@@ -972,6 +1067,12 @@ def _play_tick(
         allow_undo=allow_undo,
         allow_look=allow_look,
         design_full=room <= 0,
+        best_design=(
+            f"{len(board.best_snapshot)} interventions reaching {board.best_score:.4g}"
+            if board.best_snapshot
+            and tuple(board.best_snapshot) != tuple(board.interventions)
+            else ""
+        ),
         proven_design=(
             f"{best_design[0]} deletes {', '.join(best_design[1])} for "
             f"{best_design[2]:.3g} guaranteed product"
@@ -1043,6 +1144,23 @@ def _play_tick(
             frame=frame,
             use_linear_moma=use_linear_moma,
             state=state,
+        )
+
+    if target == RESTORE_ACTION.name:
+        board.restore(board.best_snapshot)
+        solution = _solve(board.model)
+        return frame(
+            action=RESTORE_ACTION.name,
+            outcome="applied"
+            if solution.status == "optimal"
+            else "reverted_infeasible",
+            reason=(
+                f"went back to the best design this run has found ({board.best_score:.4g} "
+                f"product, {len(board.best_snapshot)} interventions)"
+            ),
+            status=solution.status,
+            product_flux=float(solution.fluxes.get(board.product, 0.0)),
+            growth=float(solution.fluxes.get(board.biomass, 0.0)),
         )
 
     if target == UNDO_ACTION.name:
@@ -1219,12 +1337,32 @@ def _play_tick(
     if new_growth < config.growth_floor:
         board.undo()
         board.record_failure(candidate.reaction_id, action.name)
+        # The move was too strong, not wrong. Say that the same move has a gentler version
+        # still on offer for this reaction, because the agent does not infer it: watching a
+        # run, a refused ``force_on_high`` sent it to a different reaction and left behind
+        # what ``force_on_low`` on the same one would have collected.
+        gentler = GENTLER_ALTERNATIVE.get(action.name)
+        still_open = (
+            gentler is not None
+            and gentler not in board.failed_moves.get(candidate.reaction_id, set())
+            and gentler
+            in {
+                available.name
+                for available in applicable_actions(candidate.reference_flux)
+            }
+        )
+        hint = (
+            f"; the move was too strong, not wrong \u2014 {gentler} on the same reaction is "
+            "still available"
+            if still_open
+            else ""
+        )
         return frame(
             action=action.name,
             outcome="reverted_growth_floor",
             reason=(
                 f"growth would fall to {new_growth:.4g} per hour, below the floor of "
-                f"{config.growth_floor}"
+                f"{config.growth_floor}{hint}"
             ),
             intervention=intervention,
             benefit=benefit,
@@ -1454,6 +1592,44 @@ def _run_scan(
                 if math.isfinite(value):
                     board.scans.fseof_slopes[str(reaction_id)] = value
         return f"FSEOF scanned {len(trends)} reactions at {len(scan.enforced_levels)} levels"
+
+    if name == "state_distance_check":
+        from cmm.features.comparison import knockout_comparison, moma
+
+        if not board.interventions:
+            return "there is no design yet; MOMA and ROOM would compare the wild type to itself"
+        lines = []
+        try:
+            adjusted = moma(
+                board.model, board.reference, linear=config.run_moma is False
+            )
+            if adjusted.status == "optimal" and adjusted.distance is not None:
+                lines.append(
+                    f"MOMA: the cell has to move {adjusted.distance:.4g} from the wild-type "
+                    f"flux state, and makes {adjusted.fluxes.get(board.product, 0.0):.4g} "
+                    "product before adapting"
+                )
+        except Exception as error:
+            lines.append(f"MOMA could not run: {error}")
+        try:
+            switched = knockout_comparison(
+                board.model,
+                board.reference,
+                [i.reaction_id for i in board.interventions if i.mode == "knockout"]
+                or [board.interventions[0].reaction_id],
+                method="room",
+            )
+            if (
+                switched.status == "optimal"
+                and switched.n_changed_reactions is not None
+            ):
+                lines.append(
+                    f"ROOM: {switched.n_changed_reactions:.0f} reactions have to change "
+                    "their flux for this design to work"
+                )
+        except Exception as error:
+            lines.append(f"ROOM could not run: {error}")
+        return "; ".join(lines) or "neither MOMA nor ROOM could be run on this design"
 
     if name == "amplification_screen":
         # One solve per candidate, against the design as it stands. This is CMM answering

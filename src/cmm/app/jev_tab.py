@@ -27,6 +27,7 @@ from qtpy.QtCore import QObject, Qt, Signal
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
     QCheckBox,
+    QPlainTextEdit,
     QProgressBar,
     QComboBox,
     QDoubleSpinBox,
@@ -105,14 +106,17 @@ class JevTabMixin:
         self.jev_rounds_spin.setRange(1, 50)
         self.jev_rounds_spin.setValue(5)
         self.jev_ticks_spin = QSpinBox()
-        self.jev_ticks_spin.setRange(1, 40)
-        self.jev_ticks_spin.setValue(6)
+        # A step is one decision, not one edit: an undo and a scan each cost one. Steps are
+        # cheap (about 0.6 s and $0.00016), so the ceiling is generous and the design is
+        # bounded separately by the intervention count next to it.
+        self.jev_ticks_spin.setRange(1, 1000)
+        self.jev_ticks_spin.setValue(40)
         self.jev_targets_spin = QSpinBox()
         self.jev_targets_spin.setRange(1, 20)
         self.jev_targets_spin.setValue(4)
         budget_row.addWidget(QLabel("rounds"))
         budget_row.addWidget(self.jev_rounds_spin)
-        budget_row.addWidget(QLabel("moves per round"))
+        budget_row.addWidget(QLabel("steps per round"))
         budget_row.addWidget(self.jev_ticks_spin)
         budget_row.addWidget(QLabel("max interventions"))
         budget_row.addWidget(self.jev_targets_spin)
@@ -142,6 +146,21 @@ class JevTabMixin:
         limits_row.addWidget(self.jev_board_spin)
         limits_row.addStretch(1)
         form.addRow("Rules:", limits_row)
+
+        # What the person running this knows and the model does not. Guidance, not
+        # permission: it cannot widen the move vocabulary or lift the growth floor, because
+        # the agent still answers only with the criteria CMM supplies.
+        self.jev_brief = QPlainTextEdit()
+        self.jev_brief.setPlaceholderText(
+            "What should the agent know that the model does not? One point per line, for "
+            "example:\n"
+            "- The published targets for succinate in E. coli are ldhA, pflB and ptsG.\n"
+            "- Growth has to stay above 0.1 per hour for this strain to be useful.\n"
+            "- NADPH supply is the cofactor I expect to be limiting.\n"
+            "- Leave the pentose phosphate pathway alone; we cannot engineer it here."
+        )
+        self.jev_brief.setMaximumHeight(110)
+        form.addRow("Brief for the agent:", self.jev_brief)
 
         self.jev_web_check = QCheckBox(
             "Look up published evidence on the web for each candidate (slower, costs more)"
@@ -266,7 +285,8 @@ class JevTabMixin:
             product=product,
             substrate=self.jev_substrate_combo.currentText() or None,
             rounds=self.jev_rounds_spin.value(),
-            ticks_per_round=self.jev_ticks_spin.value(),
+            steps_per_round=self.jev_ticks_spin.value(),
+            brief=self.jev_brief.toPlainText(),
             max_interventions=self.jev_targets_spin.value(),
             growth_floor=self.jev_growth_spin.value(),
             candidate_limit=self.jev_board_spin.value(),

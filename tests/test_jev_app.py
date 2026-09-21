@@ -175,3 +175,37 @@ def test_the_progress_bar_counts_moves_against_the_budget(window, monkeypatch) -
     assert window.jev_progress.value() == len(window._jev_frames)
     assert window.jev_progress.value() <= window.jev_progress.maximum()
     assert "finished after" in window.jev_progress.format()
+
+
+def test_the_brief_box_reaches_the_run(window, monkeypatch) -> None:
+    """What the person types is what the agent is shown."""
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    window._refresh_jev_inputs()
+    window._goto_tab("JEV Agent")
+    window.jev_product_combo.setCurrentText("EX_succ_e")
+    window.jev_rounds_spin.setValue(1)
+    window.jev_ticks_spin.setValue(1)
+    window.jev_brief.setPlainText(
+        "- Known targets for succinate are ldhA and pflB.\n- NADPH is the limiting cofactor."
+    )
+
+    client = ScriptedClient([("end_round", None)])
+    monkeypatch.setattr(
+        "cmm.jev.engine.JevClient", lambda **kwargs: client, raising=True
+    )
+    window.run_jev_agent()
+
+    assert client.states, "the run must have reached the agent"
+    assert "ldhA" in client.states[0]["your_brief"]["text"]
+
+
+def test_the_step_ceiling_allows_a_long_game(window) -> None:
+    """Steps are decisions, not edits: an undo and a scan each cost one, so the game is long.
+
+    The design stays small — that budget is the spin box next to it, because the number a
+    laboratory has to build is a different quantity from the number of moves played.
+    """
+
+    assert window.jev_ticks_spin.maximum() >= 1000
+    assert window.jev_targets_spin.maximum() <= 20

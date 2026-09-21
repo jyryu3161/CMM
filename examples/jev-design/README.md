@@ -43,8 +43,8 @@ and a board built from where the flux is today cannot see them. What the agent a
 move OptKnock's formulation cannot express — forcing flux through the glyoxylate shunt on top
 of OptKnock's own design, for 10.761 at a real cost in growth (0.068 against 0.091).
 
-Over ten runs of this configuration: nine reached 10.761, one stopped at 9.911, none fell
-below it. That is one problem on one small model, and it is not a claim about yours.
+Over eight runs of this configuration: all eight reached 10.761, in six steps and five
+seconds each. That is one problem on one small model, and it is not a claim about yours.
 
 ## What it costs
 
@@ -88,6 +88,23 @@ report a long list of artifacts it was never meant to contain.
 
 See [SC-03](../../docs/scenarios/SC-03-jev-agent-design.md) for what each number means, how
 the board of candidate reactions is built, and what the run does not establish.
+
+## Telling the agent what you know
+
+`brief` in the config — and the text box on the *JEV Agent* tab — is for what the model does
+not contain:
+
+```
+- The published targets for succinate in anaerobic E. coli are ldhA, pflB, ptsG and pta/ackA.
+- Growth has to stay above 0.1 per hour for this strain to be useful.
+- NADPH supply is the cofactor I expect to be limiting.
+- Leave the pentose phosphate pathway alone; we cannot engineer it here.
+```
+
+It is guidance, not permission. It cannot widen the move vocabulary, name a reaction the model
+does not have, or lift the growth floor CMM enforces — the agent still answers only with the
+criteria CMM supplies — so the worst a mistaken brief can do is spend steps. It is recorded in
+`00_provenance.json`, because a result that was steered deserves to say so.
 
 ## Changing it
 

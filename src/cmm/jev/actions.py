@@ -12,9 +12,12 @@ Moves come in three kinds:
     Changes the model. Which moves exist for a reaction depends on whether it carries any
     wild-type flux, because that decides what a change can be measured against:
 
-    *Carrying flux* — ``knockdown_50``, ``knockdown_25``, ``amplify_2x``, ``amplify_5x``.
-    These are multiples of the reaction's **wild-type** flux, so "half" and "double" mean
-    the same thing at every point in a run rather than drifting with the current state.
+    *Carrying flux* — ``knockdown_50``, ``amplify_2x``, ``amplify_5x``. These are multiples
+    of the reaction's **wild-type** flux, so "half" and "double" mean the same thing at every
+    point in a run rather than drifting with the current state. There is one knockdown
+    strength, not two: a second, deeper cap mostly bought a second rejection of the same
+    idea, and roughly halving an activity is the level a laboratory can actually aim at with
+    a promoter swap or an RBS change.
 
     *Carrying none* — ``force_on_low``, ``force_on_high``. A reaction at zero has no
     reference to be a multiple of, and this is not a corner case: in anaerobic
@@ -28,8 +31,16 @@ Moves come in three kinds:
 
 ``LOOK``
     Runs a CMM analysis and feeds the answer back into the next state without changing the
-    model: ``fseof_scan``, ``essentiality_scan``, ``envelope_probe``. These are what make the
-    loop *operating CMM* rather than only editing bounds.
+    model: ``fseof_scan``, ``essentiality_scan``, ``envelope_probe``, ``state_distance_check``,
+    ``strain_design_scan``. These are what make the loop *operating CMM* rather than only
+    editing bounds.
+
+    One measurement is deliberately **not** a move. What forcing flux through each candidate
+    would do to the product is recomputed by CMM whenever the design changes, because it is a
+    fact and not a decision — and because leaving it as a move meant the agent skipped it.
+    Given the cofactor reading it would infer a plausible answer (NADPH is short, so
+    over-express an NADPH-producing enzyme) and act on the inference instead of the
+    measurement. Partial information displacing measurement is worse than no information.
 
 ``END``
     ``end_round`` — stop spending ticks on a round that has nothing left worth doing.
@@ -94,16 +105,6 @@ ACT_ACTIONS: tuple[Action, ...] = (
         description=(
             "Cap this reaction at half its wild-type flux. Choose this when the flux should "
             "be reduced but not removed, because deleting it entirely would stop growth."
-        ),
-    ),
-    Action(
-        name="knockdown_25",
-        kind="act",
-        mode="knockdown",
-        level=0.25,
-        description=(
-            "Cap this reaction at a quarter of its wild-type flux: a strong knockdown that "
-            "still leaves the function intact. Choose this when a half cap was not enough."
         ),
     ),
     Action(
@@ -178,14 +179,14 @@ LOOK_ACTIONS: tuple[Action, ...] = (
         ),
     ),
     Action(
-        name="amplification_screen",
+        name="state_distance_check",
         kind="look",
         description=(
-            "Do not change anything yet. For every reaction on the board, have CMM work out "
-            "what forcing flux through it would actually do to the product, and report the "
-            "answer. Choose this when you need to know which amplification pays before "
-            "spending a place in the design on one — the reaction on the obvious route is "
-            "often already saturated, and the one that pays is often a bypass."
+            "Do not change anything yet. Run MOMA and ROOM on the current design against the "
+            "wild type, and report how far the cell has to move and how many reactions have "
+            "to change. Choose this when you need to know whether the design is a small "
+            "rewiring or a wholesale one — a design needing forty reactions to change is a "
+            "harder strain to build than one needing five, at the same product flux."
         ),
     ),
     Action(
@@ -231,6 +232,16 @@ ADOPT_ACTION = Action(
     ),
 )
 
+RESTORE_ACTION = Action(
+    name="restore_best_design",
+    kind="act",
+    description=(
+        "Throw away the current design and go back to the best one this run has found, "
+        "whichever round it came from. Choose this when the last rounds have made things "
+        "worse and there is nothing left to learn from where the design is now."
+    ),
+)
+
 UNDO_ACTION = Action(
     name="undo_last",
     kind="act",
@@ -239,6 +250,18 @@ UNDO_ACTION = Action(
         "bounds. Choose this when the last move reduced the product or the growth rate."
     ),
 )
+
+#: The weaker version of a move, for when the stronger one was rejected for being too much.
+#: A move turned down because it dropped growth below the floor has an obvious next thing to
+#: try — the same move, gentler — and the agent will not find it on its own: watching a run,
+#: ``force_on_high`` on the glyoxylate shunt was refused on the growth floor and the agent
+#: moved to a different reaction entirely, leaving 8% of product on the table that
+#: ``force_on_low`` on that same reaction would have collected.
+GENTLER_ALTERNATIVE: Mapping[str, str] = {
+    "force_on_high": "force_on_low",
+    "amplify_5x": "amplify_2x",
+    "knockout": "knockdown_50",
+}
 
 #: Every action by name, for resolving an answer back to its definition.
 ACTION_CATALOGUE: Mapping[str, Action] = {
@@ -250,6 +273,7 @@ ACTION_CATALOGUE: Mapping[str, Action] = {
         END_ACTION,
         UNDO_ACTION,
         ADOPT_ACTION,
+        RESTORE_ACTION,
     )
 }
 

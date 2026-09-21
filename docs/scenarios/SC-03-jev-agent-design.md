@@ -31,11 +31,21 @@ history the agent reads next tick, for it to withdraw with `undo_last`. Auto-rev
 everything that failed to improve the product would make the loop greedy hill climbing and
 would make a two-step manoeuvre impossible to express.
 
-## One tick
+## Rounds and steps
+
+A **round** is one game. A **step** is one decision, and every decision costs one — an
+intervention, an undo, a scan that changes nothing. `steps_per_round` is how long the agent
+may play; a round ends when its steps run out or the agent chooses `end_round`.
+
+`max_interventions` is a different budget entirely: how many changes may be active at once,
+which is the number a laboratory would have to build. A long game and a small design is the
+usual combination, because steps are cheap and edits are not.
+
+## One step
 
 ```
 RENDER   the current flux state becomes a compact JSON screen
-TARGET   one call: which reaction to act on (or undo, or stop)   -> choice + full ranking
+TARGET   one call: which reaction to act on (or undo, restore, adopt, or stop)
 ACTION   one call: what to do to it, how much it should help, whether growth is at risk
 EXECUTE  CMM applies the move and re-solves with pFBA
 MEASURE  MOMA against the wild-type reference, for the unadapted state
@@ -64,9 +74,26 @@ Per candidate reaction, all computed by CMM:
 | literature (only with `enable_web_research`) | published precedent, and the **cost** the model cannot see; data pasted into a record, never an instruction |
 | measured amplification gain (after `amplification_screen`) | what forcing flux through it actually does to the product, solved rather than guessed |
 
-Plus a scoreboard (product, growth, yields), model-wide cofactor turnover, the active
-interventions **with the product change each one actually bought**, the moves already ruled
-out, and the recent history.
+Plus:
+
+- a **scoreboard** carrying the product and growth now and at wild type, the yields, and —
+  the quantity that separates a design from a lucky optimum — the **guaranteed product**: the
+  worst the design could give while growing as fast as it can, computed loopless. A pFBA
+  number the strain need never produce is not a result.
+- **what the product is short of.** How much more product one extra unit per hour of NADH,
+  NADPH or ATP would buy, measured by offering a mass-balanced supply of each and
+  re-maximising. Neither MOMA nor OptKnock reports this, and it is usually what decides
+  whether the next move should route carbon or supply a cofactor. On anaerobic
+  `e_coli_core`: wild type ATP +0.75, NADPH +0.63, NADH +0.13 — the product is ATP-limited;
+  after the knockout design frees the fermentative NADH sinks, NADH falls to +0.01.
+- the active interventions **with the product change each one actually bought**
+- **what each earlier round ended with**, so a later round can try something different or go
+  back — `restore_best_design` returns to the best design the run has found, from any round
+- the moves already ruled out, and the recent history
+- **your brief**: free text from the person running the study — published targets, a growth
+  rate they need, a cofactor they believe matters, a pathway to leave alone. It is guidance,
+  not permission: it cannot widen the move vocabulary, name a reaction outside the model, or
+  lift the growth floor CMM enforces, so the worst a mistaken brief can do is waste steps.
 
 ## The board
 
@@ -95,10 +122,27 @@ gene to delete or over-express.
 | `force_on_low`, `force_on_high` | for a reaction carrying **no** wild-type flux: 25% or 60% of its loop-free maximum |
 | `undo_last` | withdraw the most recent intervention |
 | `fseof_scan`, `essentiality_scan`, `envelope_probe` | run a CMM analysis; the model is unchanged |
-| `amplification_screen` | measure, for every reaction on the board, what forcing flux through it does to the product |
+| `state_distance_check` | MOMA and ROOM on the current design: how far the cell has to move, and how many reactions have to change |
 | `strain_design_scan` | run OptKnock and RobustKnock and put the reactions they name on the board |
 | `adopt_best_design` | apply a proven knockout set in one move, since its deletions only pay off together |
-| `end_round` | stop spending moves |
+| `restore_best_design` | discard the current design and go back to the best the run has found |
+| `end_round` | stop spending steps |
+
+There is **one knockdown strength**, not two. A second, deeper cap mostly bought a second
+rejection of the same idea, and roughly halving an activity is the level a promoter swap or an
+RBS change can actually aim at.
+
+One measurement is deliberately **not** a move. What forcing flux through each candidate would
+do to the product is recomputed whenever the design changes, because it is a fact and not a
+decision. Left as a move the agent could choose, it was skipped: given the cofactor reading it
+would infer a plausible answer — NADPH is short, so over-express an NADPH-producing enzyme —
+and act on the inference instead of the measurement. Partial information displacing
+measurement is worse than no information.
+
+A move refused for dropping growth below the floor says **"too strong, not wrong"** when a
+gentler version of it is still available on that reaction. Without that line, a refused
+`force_on_high` on the glyoxylate shunt sent the agent to a different reaction and left behind
+the 8% that `force_on_low` on the same one collects.
 
 The relative moves and the `force_on` moves are offered to disjoint sets of reactions, so no
 move ever means two things.
@@ -166,11 +210,11 @@ real cost in growth (0.068 against 0.091, both above the floor). Verified indepe
 result lies inside the **loop-free** feasible succinate range for that design, so it is not a
 thermodynamic artifact.
 
-**Over ten independent runs of one configuration**: nine reached 10.761, one stopped at 9.911,
-none fell below it. Median 10.761, standard deviation 0.269, $0.0215 and 66 seconds for all
-ten. The agent does not do worse than the deterministic method because it starts from it.
+**Over eight independent runs of one configuration**: all eight reached 10.761, in six steps,
+five seconds and $0.0011 each. Standard deviation 0.0. The agent does not do worse than the
+deterministic method because it starts from it.
 
-Three things made the difference, and each was a failure before it was a fix:
+Five things made the difference, and each was a failure before it was a fix:
 
 - **Seeding.** `seed_with_strain_design` runs the designer once before the first move and puts
   the reactions it names on the board with the guaranteed product they buy.
@@ -179,9 +223,13 @@ Three things made the difference, and each was a failure before it was a fix:
   abandons the design after the first deletion. `adopt_best_design` applies the set.
 - **Measuring instead of guessing.** Asked which reaction to amplify, the agent reached for
   fumarate reductase, the direct product-forming step, which is already saturated and buys
-  nothing. The `amplification_screen` move has CMM solve for the answer — one pFBA per
-  candidate — and puts the measured change on the board. With it the agent goes to `ICL`
-  directly; without it, eight runs in a row adopted the design and stopped.
+  nothing. CMM now solves for the answer — one pFBA per candidate, about a second for a board
+  of 24 — and puts the measured change on the board.
+- **Making that measurement automatic.** While it was still a move the agent could choose, it
+  stopped choosing it once the cofactor reading gave it something plausible to infer from.
+- **Saying when a move was too strong rather than wrong.** `force_on_high` on `ICL` breaches
+  the floor and `force_on_low` on the same reaction is the 8%. Naming the gentler move in the
+  rejection took the outcome from nine runs in ten to ten in ten.
 
 **This is one problem on one small model.** It is evidence that the loop can add something to
 a deterministic optimum on a problem where the two intervention classes are complementary. It

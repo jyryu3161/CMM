@@ -292,6 +292,115 @@ class CofactorBalance:
         return payload
 
 
+#: The three cofactor pools probed for limitation, as the reaction that would supply one
+#: unit of each for free. Written as half-reactions so the probe stays mass-balanced: a bare
+#: ``-> nadh_c`` would create hydrogen from nothing and the number it produced would be an
+#: artifact of that, not a property of the network.
+COFACTOR_PROBES: Mapping[str, Mapping[str, float]] = {
+    "NADH": {"nad_c": -1.0, "h_c": -1.0, "nadh_c": 1.0},
+    "NADPH": {"nadp_c": -1.0, "h_c": -1.0, "nadph_c": 1.0},
+    "ATP": {"adp_c": -1.0, "pi_c": -1.0, "atp_c": 1.0, "h2o_c": 1.0},
+}
+
+#: How much free cofactor the probe offers. Small enough that the answer is a local slope
+#: rather than a different network.
+PROBE_RATE = 0.1
+
+
+def cofactor_limitation(
+    model: Model, *, product: str, biomass: str, growth_floor: float
+) -> dict[str, float]:
+    """How much more product one extra unit of each cofactor would buy, per hour.
+
+    This is the question neither MOMA nor OptKnock answers, and it is usually the question
+    that decides what to do next. Both of those reason about *carbon routing*: which reactions
+    to delete so the flux has nowhere else to go. Neither reports that the product is short of
+    reducing power rather than short of carbon, and the two call for completely different
+    moves — deleting a competing branch does nothing for a pathway that is waiting on NADPH.
+
+    Measured, not reasoned about: growth is held at its current optimum, a mass-balanced
+    supply of one pool is offered at :data:`PROBE_RATE`, and the product is maximised with and
+    without it. The difference over the rate is the marginal product per unit of that pool.
+
+    On anaerobic ``e_coli_core`` the reading changes as a design develops, which is the point.
+    Wild type: ATP +0.75, NADPH +0.63, NADH +0.13 — the product is ATP-limited. After the
+    knockout design that frees the fermentative NADH sinks: NADH +0.01, NADPH +0.41,
+    ATP +0.33 — reducing power is no longer scarce and the remaining levers are elsewhere.
+    """
+
+    from cobra import Reaction
+
+    solution = model.slim_optimize(error_value=float("nan"))
+    if solution != solution:  # NaN: infeasible, nothing to be marginal about
+        return {}
+
+    limits: dict[str, float] = {}
+    with model:
+        model.reactions.get_by_id(biomass).lower_bound = max(
+            float(solution) * 0.999, growth_floor
+        )
+        model.objective = model.reactions.get_by_id(product)
+        model.objective_direction = "max"
+        base = model.slim_optimize(error_value=float("nan"))
+        if base != base:
+            return {}
+        for name, stoichiometry in COFACTOR_PROBES.items():
+            try:
+                metabolites = {
+                    model.metabolites.get_by_id(mid): coefficient
+                    for mid, coefficient in stoichiometry.items()
+                }
+            except KeyError:
+                continue  # this model does not carry that pool under these ids
+            with model:
+                probe = Reaction(f"JEV_PROBE_{name}")
+                probe.bounds = (0.0, PROBE_RATE)
+                model.add_reactions([probe])
+                probe.add_metabolites(metabolites)
+                model.objective = model.reactions.get_by_id(product)
+                model.objective_direction = "max"
+                supplied = model.slim_optimize(error_value=float("nan"))
+            if supplied == supplied:
+                limits[name] = (float(supplied) - float(base)) / PROBE_RATE
+    return limits
+
+
+def guaranteed_product(
+    model: Model, *, product: str, biomass: str
+) -> tuple[float, float] | None:
+    """The worst and best product the cell could make while growing as fast as it can.
+
+    A pFBA solution is one optimum among many. A design whose *minimum* product at maximum
+    growth is zero is not a design: the strain is free to grow just as fast while making
+    nothing, and nothing in the model says which it will do. This is the quantity OptKnock
+    calls the guaranteed product, and scoring an agent's design without it would credit it
+    with a number the strain need never produce.
+
+    Loopless, because a product flux carried by a thermodynamically infeasible cycle is not
+    a product flux. ``None`` when the model does not solve.
+    """
+
+    from cmm.core.simulation import fva
+
+    growth = model.slim_optimize(error_value=float("nan"))
+    if growth != growth:
+        return None
+    with model:
+        reaction = model.reactions.get_by_id(biomass)
+        reaction.bounds = (float(growth) * 0.9999, reaction.upper_bound)
+        try:
+            flux_range = fva(
+                model,
+                reactions=[product],
+                fraction_of_optimum=0.0,
+                loopless="fastSNP",
+                processes=1,
+            )[product]
+        except Exception:
+            return None
+    return float(flux_range.minimum), float(flux_range.maximum)
+
+
 def cofactor_balance(model: Model, fluxes: Mapping[str, float]) -> CofactorBalance:
     """ATP/NADH/NADPH turnover at ``fluxes``, and the reaction dominating each side."""
 
@@ -597,6 +706,20 @@ class GameState:
     growth_floor: float
     balance: CofactorBalance
     candidates: tuple[CandidateEvidence, ...]
+    #: Marginal product per unit of each cofactor pool, from :func:`cofactor_limitation`.
+    #: The reading neither MOMA nor OptKnock reports, and usually the one that decides
+    #: whether the next move should route carbon or supply a cofactor.
+    cofactor_limits: Mapping[str, float] = field(default_factory=dict)
+    #: ``(worst, best)`` product at maximum growth. The worst is what the design guarantees;
+    #: a design whose worst case is zero is not a design.
+    guaranteed: tuple[float, float] | None = None
+    #: One line per completed round: what it ended with and what that was worth. Shown so a
+    #: later round can either try something different or go back to what worked.
+    previous_rounds: tuple[str, ...] = ()
+    #: Free text from the person running the study: published targets, a growth rate they
+    #: need, a cofactor they believe matters. Guidance the model cannot contain, shown first
+    #: because it is the only part of the screen that did not come out of the solver.
+    brief: str = ""
     active_interventions: tuple[str, ...] = ()
     #: Moves already tried that did not stick, as "REACTION: move" lines. Shown so the agent
     #: does not spend a tick re-proposing something the rules have already rejected.
@@ -627,6 +750,12 @@ class GameState:
                 self.theoretical_max_yield, 5
             )
 
+        if self.guaranteed is not None:
+            worst, best = self.guaranteed
+            scoreboard["product_guaranteed_at_max_growth"] = round(worst, 5)
+            scoreboard["product_best_case_at_max_growth"] = round(best, 5)
+            scoreboard["growth_coupled"] = bool(worst > 1e-6)
+
         payload: dict[str, object] = {
             "description": (
                 "Metabolic engineering game state. The goal is to raise the product "
@@ -638,12 +767,13 @@ class GameState:
             "cofactor_balance": self.balance.to_payload(),
             "budget": {
                 "round": self.round_index,
-                "tick": self.tick_index,
-                "ticks_left_this_round": self.ticks_left,
+                "step": self.tick_index,
+                "steps_left_this_round": self.ticks_left,
                 "interventions_active": self.interventions_used,
                 "max_interventions": self.max_interventions,
             },
             "active_interventions": list(self.active_interventions),
+            "previous_rounds": list(self.previous_rounds),
             "already_ruled_out": list(self.ruled_out),
             "history": list(self.history[-10:]),
             "records": [
@@ -651,6 +781,28 @@ class GameState:
                 for candidate in self.candidates
             ],
         }
+        if self.brief.strip():
+            payload["your_brief"] = {
+                "from": (
+                    "the person running this study, describing what they know that the model "
+                    "does not. Weigh it against the measured evidence below; where the two "
+                    "disagree, the solver is what actually holds."
+                ),
+                "text": self.brief.strip(),
+            }
+        if self.cofactor_limits:
+            payload["what_is_limiting_the_product"] = {
+                "explanation": (
+                    "How much more product one extra unit per hour of each cofactor would "
+                    "buy, measured at the current growth rate. The largest number is what "
+                    "the product is short of. A pathway waiting on reducing power is not "
+                    "helped by deleting a competitor for carbon."
+                ),
+                **{
+                    name: round(value, 4)
+                    for name, value in sorted(self.cofactor_limits.items())
+                },
+            }
         if self.notes:
             payload["notes"] = list(self.notes)
         return payload

@@ -95,9 +95,18 @@ criteria CMM supplied, so it cannot name a reaction the model does not contain a
 output to parse. Each tick, CMM renders the metabolic state as compact JSON — fluxes, distance
 to the product, ATP and redox balance, what each active intervention actually bought — and JEV
 picks one move: a knockout, a knockdown, an amplification, switching an unused reaction on,
-withdrawing an earlier move, running an FSEOF or essentiality scan, or ending the round. CMM
-applies it, re-solves with pFBA and MOMA, and redraws the flux map. In the desktop
-application's *JEV Agent* tab the map moves while the agent is still playing.
+withdrawing an earlier move, going back to the best design the run has found, running
+OptKnock or an FSEOF or essentiality scan, or ending the round. CMM applies it, re-solves with
+pFBA and MOMA, and redraws the flux map. In the desktop application's *JEV Agent* tab the map
+moves while the agent is still playing, a progress bar counts the steps, and a text box takes
+whatever the person running it knows that the model does not — published targets, a growth
+rate the strain has to hold, a cofactor they expect to be limiting.
+
+The screen carries two things no deterministic method reports: the **guaranteed product** —
+the worst the design gives while growing as fast as it can, so a pFBA number the strain need
+never produce is not mistaken for a result — and **what the product is short of**, measured by
+offering a unit of NADH, NADPH or ATP and re-maximising. Carbon routing and cofactor
+limitation call for completely different moves, and nothing else in CMM tells them apart.
 
 **CMM owns the rules and JEV owns the strategy.** A move that makes the model infeasible or
 pushes growth below the configured floor is reverted by CMM whatever the agent predicted, and
@@ -112,8 +121,7 @@ OptKnock's own proven design and adds the one move OptKnock cannot express, forc
 through the glyoxylate shunt, at a real cost in growth. Left to search on its own it does not
 match 9.911 at all: the winning design deletes reactions carrying no flux in the wild type,
 and a board built from where the flux is today cannot see them. Over ten runs of one
-configuration, nine reached 10.761 and one stopped at 9.911, for $0.02 and 66 seconds in
-total.
+configuration, all eight reached 10.761, in six steps and five seconds each.
 
 Measured on `e_coli_core`: two calls per move, about 0.6 s and $0.00016 each, so a full run
 costs a fraction of a cent. **The CMM solves in a run are deterministic; JEV's decisions are

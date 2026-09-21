@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from cmm.jev.actions import (
     ADOPT_ACTION,
     END_ACTION,
+    RESTORE_ACTION,
     LOOK_ACTIONS,
     UNDO_ACTION,
     Action,
@@ -68,8 +69,9 @@ class QuestionSet:
         allow_look: bool,
         design_full: bool = False,
         proven_design: str = "",
+        best_design: str = "",
     ) -> dict[str, Mapping[str, object]]:
-        """Stage one: which reaction to act on next (or stop, undo, or adopt a design)."""
+        """Stage one: which reaction to act on next, or stop, undo, adopt or go back."""
 
         raise NotImplementedError
 
@@ -125,6 +127,7 @@ class ProductionV1(QuestionSet):
         allow_look: bool,
         design_full: bool = False,
         proven_design: str = "",
+        best_design: str = "",
     ) -> dict[str, Mapping[str, object]]:
         if not candidates and not design_full:
             raise ValueError(
@@ -146,6 +149,10 @@ class ProductionV1(QuestionSet):
         if proven_design and not design_full:
             criteria[ADOPT_ACTION.name] = (
                 f"{ADOPT_ACTION.description} The design available is: {proven_design}."
+            )
+        if best_design:
+            criteria[RESTORE_ACTION.name] = (
+                f"{RESTORE_ACTION.description} The best design so far: {best_design}."
             )
         if allow_undo:
             criteria[UNDO_ACTION.name] = UNDO_ACTION.description
@@ -216,10 +223,6 @@ class ProductionV1(QuestionSet):
                 )
                 and not (
                     action.name == "fseof_scan" and candidate.fseof_slope is not None
-                )
-                and not (
-                    action.name == "amplification_screen"
-                    and candidate.amplification_gain is not None
                 )
             )
         criteria = {action.name: action.description for action in actions}
