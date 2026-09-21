@@ -429,6 +429,36 @@ and work using that layout should cite King et al. (2015); the bundled map's pro
 SHA-256 and license are recorded in `src/cmm/resources/ATTRIBUTION.md` and asserted by
 `tests/test_resources.py`.
 
+### JEV agent design
+
+`run_jev_design` implements **no published method** and must not be cited to one. It is a
+search loop whose proposal step is TypeSafe's JEV decision model and whose every measurement
+is an ordinary CMM solve. What is validated is the loop, not the agent:
+
+- Each applied move becomes bounds on one reaction, and the resulting state is a `pfba` solve
+  and (unless disabled) a `moma` solve against the wild-type pFBA reference. Both carry the
+  contracts documented above; the agent adds no numerics of its own.
+- **Viability is enforced by CMM, not predicted.** A move leaving the model infeasible, or
+  growth below `growth_floor`, is reverted and recorded. `tests/test_jev.py` asserts this
+  against a scripted agent that repeatedly proposes a lethal knockout.
+- `force_on_*` targets a fraction of the reaction's **loopless** feasible maximum. The plain
+  LP maximum is a loop artifact on `e_coli_core` (`FRD7` returns its 1000 bound through the
+  `FRD7`/`SUCDi` cycle at 10 mmol gDW⁻¹ h⁻¹ glucose uptake) and forcing a fraction of it
+  would be meaningless. Asserted by `test_switching_a_reaction_on_uses_its_loop_free_maximum`.
+- Candidates are restricted to reactions carrying a gene association, so a proposal is an
+  intervention a laboratory could make rather than a bound edit that only exists in silico.
+
+**Reproducibility is partial and must be stated as such.** Every CMM solve in a run is
+deterministic. JEV's decisions are not guaranteed to repeat: repeated runs of the same
+configuration have produced designs differing several-fold in product flux.
+`04_agent/transcript.jsonl` records every request and response so a single run can be
+audited; it does not make the method reproducible. A single run is evidence about that run.
+Claiming agent performance requires repeated runs and a stated distribution, which this
+release does not provide, and comparing it against FSEOF or OptKnock requires running those
+on the same model and condition, which SC-03 does not do.
+
+Predictions are computational hypotheses for experimental test, exactly as elsewhere in CMM.
+
 ### Production workflow and publication-report contract
 
 `run_production_target_discovery` is validated as orchestration, not as a new metabolic

@@ -101,6 +101,7 @@ from cmm.omics.differential import (
 )
 from cmm.omics.expression import integrate_expression
 from cmm.app.svg_background import svg_background
+from cmm.app.jev_tab import JEV_TAB_NAME, JevTabMixin
 from cmm.resources import bundled_map_for, map_reaction_ids
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -452,7 +453,7 @@ _MAP_LAYOUT_ESCHER = "Escher map (curated)"
 _MAP_LAYOUT_SCHEMATIC = "Schematic (top reactions)"
 
 
-class CmmMainWindow(QMainWindow):
+class CmmMainWindow(JevTabMixin, QMainWindow):
     """Main platform window over a single cobra model."""
 
     def __init__(
@@ -603,6 +604,12 @@ class CmmMainWindow(QMainWindow):
             "Render Flux Map",
             lambda: self._in_tab("Flux Map", self.render_flux_map),
         )
+
+        jev = bar.addMenu("&JEV")
+        jev.addAction("Let JEV Play…", lambda: self._goto_tab(JEV_TAB_NAME))
+        jev.addSeparator()
+        jev.addAction("Show Run Progress", self.show_jev_progress)
+        jev.addAction("Show Last Decision", self.show_jev_last_decision)
 
         model_menu = bar.addMenu("&Model")
         model_menu.addAction("Model Info…", self._show_model_info)
@@ -883,6 +890,7 @@ class CmmMainWindow(QMainWindow):
             "Omics": self.omics_table,
             "Revert Metabolism": self.revert_table,
             "Transform (A→B)": self.transform_table,
+            JEV_TAB_NAME: self.jev_table,
         }.get(name)
 
     def _active_figure(self):
@@ -897,6 +905,8 @@ class CmmMainWindow(QMainWindow):
             return self._sampling_canvas.figure
         if name == "Flux Map" and self._map_canvas is not None:
             return self._map_canvas.figure
+        if name == JEV_TAB_NAME and self._jev_canvas is not None:
+            return self._jev_canvas.figure
         return None
 
     def export_table_csv(self) -> None:
@@ -1033,6 +1043,9 @@ class CmmMainWindow(QMainWindow):
         self.tabs.addTab(self._build_fluxmap_tab(), "Flux Map")
         self.tabs.addTab(self._build_revert_tab(), "Revert Metabolism")
         self.tabs.addTab(self._build_transformation_tab(), "Transform (A→B)")
+        # The agent tab is last: it drives the same services the tabs before it expose,
+        # and it is the only one that needs a network credential.
+        self.tabs.addTab(self._build_jev_tab(), JEV_TAB_NAME)
         return self.tabs
 
     def _build_omics_tab(self) -> QWidget:
@@ -3347,6 +3360,11 @@ class CmmMainWindow(QMainWindow):
             self.yield_label.setText(
                 "No exchange reactions in this model — production design unavailable."
             )
+
+        # The agent tab reads its exchange lists and its run gate from the loaded model.
+        # Guarded like the lines above: load_model also runs before the UI is fully built.
+        if hasattr(self, "jev_product_combo"):
+            self._refresh_jev_inputs()
 
         # A sampled ensemble belongs to the model it was drawn from; drop it on a reload so a
         # stale export cannot be attributed to the new model.

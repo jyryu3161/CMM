@@ -84,6 +84,7 @@ narrow requests.
 | Per-condition fluxes from one table | `predict_condition_fluxes` | `cmm.omics` |
 | Knockouts that revert disease→healthy | `revert_targets` (MTA/rMTA) | `cmm.features` |
 | Knockouts that move state A→B | `transformation_targets` | `cmm.features` |
+| **Let a decision model search the design space** | `run_jev_design` | `cmm.jev` |
 
 Keep the two families straight:
 
@@ -93,6 +94,14 @@ Keep the two families straight:
   *you* supply the goal, CMM proposes targets.
 
 A complete engineering answer uses both: inverse methods to propose, forward methods to verify.
+
+`cmm.jev` is a third family and is not interchangeable with either. It puts TypeSafe's JEV
+decision model in a loop: CMM renders the metabolic state, JEV picks one move from a fixed
+vocabulary, CMM executes it and re-solves. **CMM enforces viability** — a move that makes the
+model infeasible or breaches the growth floor is reverted whatever the agent predicted — while
+**JEV chooses the strategy**. Its CMM solves are deterministic; its decisions are not, so a
+single run is never the method's performance. It needs `OPENROUTER_API_KEY`; nothing else in
+CMM does. See `docs/scenarios/SC-03-jev-agent-design.md`.
 
 ---
 

@@ -80,6 +80,7 @@ INCLUDED_FEATURES = (
     "random_flux_sampling",
     "production_target_workflow",
     "publication_reporting",
+    "jev_target_design",
 )
 
 # Roadmap items described in docs/feature-roadmap.md (Phase 3 / Phase 5) that do NOT yet have

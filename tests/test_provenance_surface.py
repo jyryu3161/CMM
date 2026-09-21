@@ -379,6 +379,10 @@ def test_the_registry_covers_every_shipped_analysis_feature():
         "revert_metabolism",  # -> revert_targets
         "flux_response_analysis",  # -> flux_response
         "production_target_workflow",  # composed, tested orchestration
+        # Also composed orchestration: every number it reports comes from a service
+        # registered above. Its own run-level block is asserted against REQUIRED_FIELDS
+        # by test_jev.py::test_the_run_provenance_carries_every_required_field.
+        "jev_target_design",
         "publication_reporting",  # artifact validation and rendering, not a numeric solve
     }
     registered = set(SERVICES) | {

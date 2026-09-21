@@ -1,0 +1,30 @@
+{
+  "model_path": "../production-targets/data/e_coli_core.xml",
+  "product": "EX_succ_e",
+  "substrate": "EX_glc__D_e",
+  "biomass": "Biomass_Ecoli_core",
+  "output_dir": "../../results/example-jev-succinate",
+  "organism": "Escherichia coli",
+  "condition": {
+    "name": "glucose_anaerobic",
+    "bounds": [
+      {"reaction_id": "EX_glc__D_e", "lower_bound": -10.0, "upper_bound": 1000.0},
+      {"reaction_id": "EX_o2_e", "lower_bound": 0.0, "upper_bound": 1000.0}
+    ],
+    "notes": "Glucose uptake 10 mmol gDW^-1 h^-1, oxygen uptake closed. Same condition as the SC-01 succinate example, so the two runs are comparable."
+  },
+  "rounds": 6,
+  "ticks_per_round": 6,
+  "max_interventions": 4,
+  "growth_floor": 0.05,
+  "candidate_limit": 24,
+  "allow_look_actions": true,
+  "run_moma": true,
+  "jev_model": "typesafe/jev-1.13",
+  "question_set": "production_v1",
+  "enable_web_research": false,
+  "max_decisions": 400,
+  "max_cost_usd": 1.0,
+  "seed": 0,
+  "overwrite": true
+}

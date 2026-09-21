@@ -78,6 +78,40 @@ E-Flux2, not the original paper's iMAT-plus-sampling reference, and epsilon must
 the data; these departures are recorded in the report. See the
 [SC-02 contract](docs/scenarios/SC-02-transformation-target-discovery.md) and
 [config/API reference](docs/agent-reference.md#complete-transformation-workflow--cmmworkflowstransformation).
+
+### A decision model plays the model
+
+Both workflows above are deterministic optimisations. The third entry point is not: it puts
+TypeSafe's JEV decision model in a loop and lets it search the design space, one move at a
+time, while CMM enforces the rules.
+
+```bash
+export OPENROUTER_API_KEY=...   # the only part of CMM that needs a credential
+uv run --frozen --all-extras cmm jev-design --config examples/jev-design/config.json
+```
+
+JEV is a *System One* model: it generates no text and returns a typed answer chosen from
+criteria CMM supplied, so it cannot name a reaction the model does not contain and there is no
+output to parse. Each tick, CMM renders the metabolic state as compact JSON — fluxes, distance
+to the product, ATP and redox balance, what each active intervention actually bought — and JEV
+picks one move: a knockout, a knockdown, an amplification, switching an unused reaction on,
+withdrawing an earlier move, running an FSEOF or essentiality scan, or ending the round. CMM
+applies it, re-solves with pFBA and MOMA, and redraws the flux map. In the desktop
+application's *JEV Agent* tab the map moves while the agent is still playing.
+
+**CMM owns the rules and JEV owns the strategy.** A move that makes the model infeasible or
+pushes growth below the configured floor is reverted by CMM whatever the agent predicted, and
+the reversal is a recorded row. A move that is merely unhelpful is kept for the agent to
+withdraw itself.
+
+Measured on `e_coli_core`: two calls per move, about 0.6 s and $0.00016 each, so a full run
+costs under a cent. **The CMM solves in a run are deterministic; JEV's decisions are not** —
+repeated runs of one configuration have produced designs differing several-fold in product
+flux. Every request and response is saved to `04_agent/transcript.jsonl` so a single run can
+be audited, which is not the same as the method being reproducible; a single run is never the
+method's performance. See the
+[SC-03 contract](docs/scenarios/SC-03-jev-agent-design.md) and the
+[succinate example](examples/jev-design/README.md).
 The command writes raw tables, archives both expression inputs, renders R figures and both
 HTML reports, and validates the bundle. `--analysis-only` omits R rendering;
 `scripts/reproduce.py` replays the archived inputs after moving the run directory.
@@ -126,6 +160,10 @@ Zenodo or an equivalent long-term repository and its DOI added to this section,
   and offered automatically to any model containing at least half its reactions, including
   genome-scale ones — or a dependency-free schematic of the highest-flux reactions for models
   no map fits. Any Escher JSON can be loaded from the GUI.
+- JEV agent: a decision model drives CMM's own services in a round-based loop to search for
+  a production design, with viability enforced by the solver rather than predicted by the
+  agent. Reached as `run_jev_design` in Python, `cmm jev-design` on the command line, and the
+  *JEV Agent* tab in the application. Needs `OPENROUTER_API_KEY`; nothing else in CMM does.
 - Auditability: deterministic model fingerprints and solver/package/parameter provenance on
   numerical results.
 - Production workflow: the concrete `production_target_workflow` composes MOMA-L2/ROOM single

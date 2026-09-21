@@ -59,6 +59,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Candidate to mark throughout the report, for example the knockout under test.",
     )
 
+    jev = commands.add_parser(
+        "jev-design",
+        help="Let the JEV decision model play the model to raise a product flux.",
+    )
+    jev.add_argument(
+        "--config",
+        required=True,
+        type=Path,
+        help="UTF-8 JSON JevConfig file.",
+    )
+    jev.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Do not print each move as it is played.",
+    )
+
     report = commands.add_parser("report", help="Render or validate a schema-v2 run.")
     report_commands = report.add_subparsers(dest="report_command", required=True)
     render = report_commands.add_parser(
@@ -177,6 +193,44 @@ def _run_transformation(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_jev(args: argparse.Namespace) -> int:
+    from cmm.jev import JevConfig, run_jev_design
+
+    config = JevConfig.from_json(args.config)
+    if config.output_dir is None:
+        raise ValueError(
+            "jev-design requires config.output_dir so the run has a self-contained "
+            "directory; the agent transcript is the only record of why each move was made"
+        )
+
+    # Moves are printed as they happen: a run is a sequence of decisions, and watching it is
+    # most of the point. --quiet is there for scripting.
+    def announce(tick, _fluxes) -> None:
+        print(tick.headline(), flush=True)
+
+    result = run_jev_design(config, on_tick=None if args.quiet else announce)
+    summary = result.summary()
+    print(
+        json.dumps(
+            {
+                "run_directory": str(result.run_directory),
+                "product": summary["product"],
+                "wild_type_product_flux": summary["wild_type_product_flux"],
+                "best_product_flux": summary["best_product_flux"],
+                "best_growth": summary["best_growth"],
+                "beat_wild_type": summary["beat_wild_type"],
+                "best_design": summary["best_design"],
+                "n_ticks": summary["n_ticks"],
+                "usage": summary["usage"],
+                # Stated on every run: the CMM solves repeat, the agent's choices need not.
+                "notes": summary["notes"],
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
 def _workflow_of(run_dir: str | Path) -> str:
     """Read the run's own workflow id, so the caller never has to name it.
 
@@ -207,7 +261,19 @@ def _run_report(args: argparse.Namespace) -> int:
         validate_transformation_run,
     )
 
-    transformation = _workflow_of(args.run_dir) == "transformation_target_discovery"
+    workflow = _workflow_of(args.run_dir)
+    if workflow == "jev_target_design":
+        # A JEV run writes a schema-v2 bundle but has no publication renderer or completion
+        # gate of its own. Falling through would validate it against the production contract
+        # and report a long list of artifacts it was never meant to contain.
+        print(
+            "this is a JEV agent run; it has no publication renderer or completion gate. "
+            "Its results are in 02_game/ticks.csv, 03_design/best_design.csv and "
+            "04_agent/transcript.jsonl.",
+            file=sys.stderr,
+        )
+        return 1
+    transformation = workflow == "transformation_target_discovery"
 
     if args.report_command == "render":
         if transformation:
@@ -252,6 +318,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run_production(args)
         if args.command == "transformation-targets":
             return _run_transformation(args)
+        if args.command == "jev-design":
+            return _run_jev(args)
         if args.command == "report":
             return _run_report(args)
     except Exception as error:

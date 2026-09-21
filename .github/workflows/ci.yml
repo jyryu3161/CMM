@@ -72,7 +72,7 @@ jobs:
         run: >-
           uv run --no-sync mypy
           src/cmm/core src/cmm/features src/cmm/omics
-          src/cmm/workflows src/cmm/reporting
+          src/cmm/workflows src/cmm/reporting src/cmm/jev
 
       - name: Validate citation and audit locked dependencies
         if: runner.os == 'Linux' && matrix.python-version == '3.12'
