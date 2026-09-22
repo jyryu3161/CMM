@@ -431,13 +431,19 @@ def build_intervention(
             continue
         cap = abs(level * own)
         # Cap the magnitude without opening a direction the reaction did not already have.
-        bounds.append(
-            (
-                rid,
-                max(float(affected.lower_bound), -cap),
-                min(float(affected.upper_bound), cap),
+        lower = max(float(affected.lower_bound), -cap)
+        upper = min(float(affected.upper_bound), cap)
+        if lower > upper:
+            # The reaction is already held above the cap — a maintenance demand pinned at a
+            # floor, or a bound an earlier edit tightened. Weakening it to half is not a
+            # constraint that exists, and writing the crossed bounds would raise from inside
+            # cobra with nothing to say which move caused it.
+            raise ActionNotApplicable(
+                f"{action.name!r} would cap {rid!r} at {cap:.4g}, below the lower bound of "
+                f"{affected.lower_bound:.4g} it is already held at; the reaction cannot carry "
+                "half its flux"
             )
-        )
+        bounds.append((rid, lower, upper))
 
     return Intervention(
         reaction_id=reaction_id,

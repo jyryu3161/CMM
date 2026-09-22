@@ -87,6 +87,7 @@ def export_run(result: JevResult, *, model: Model, reference: FluxState) -> JevR
         {
             "product": config.product,
             "product_flux": result.wild_type_product_flux,
+            "guaranteed_product": result.wild_type_guaranteed_product,
             "growth": result.wild_type_growth,
             "theoretical_max_yield": result.theoretical_max_yield,
             "growth_floor": config.growth_floor,

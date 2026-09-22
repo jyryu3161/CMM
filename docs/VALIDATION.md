@@ -502,6 +502,40 @@ is an ordinary CMM solve. What is validated is the loop, not the agent:
 - **Knockouts and knockdowns are budgeted separately** (`max_knockouts`, `max_knockdowns`),
   because they are different things for a laboratory to build and a single shared cap is not
   a quantity anyone plans against.
+- **Designs are ranked on the guaranteed product, not the pFBA product**, which is CMM's rule
+  for strain design everywhere else. The guarantee is the minimum product at maximum growth,
+  computed loopless by `cmm.jev.state.guaranteed_product`; it is measured on every tick that
+  changes the design, recorded on `TickRecord`, `RoundRecord` and `JevResult`, and is what
+  `restore_best_design` goes back to. A design whose guarantee was asked for and could not be
+  measured is left out of the ranking rather than scored on its pFBA product, because ranking a
+  worst case against a best case would make the winner depend on which quantity happened to be
+  available; the run notes that it happened. With `measure_guaranteed_product` off the whole run
+  ranks on the pFBA product consistently, which `provenance["designs_ranked_on"]` and a note both
+  state rather than leaving it to be inferred.
+- **No two designs are compared at two growth rates without the table saying so.** Every row of
+  `05_baseline/comparison.csv` carries `guaranteed_at_matched_growth`: the guarantee with growth
+  held at the lowest maximum growth among the compared designs, which is the only rate every
+  design in the table can reach. Without it a design bought by spending growth reads as a better
+  method rather than as the same trade-off read at a different point — measured on the shipped
+  succinate example, the agent's design is 0.4% ahead of OptKnock's read at their own growth
+  rates and 29% ahead read at one.
+- **Every row is scored as the strain that would be built.** The deterministic designers name
+  reactions; their rows are resolved through the same GPR layer as the agent's moves, so
+  isozymes, complexes and shared genes enter every row identically. The single-gene row is
+  chosen on the MOMA-L2 screen and re-scored under pFBA like everything else, rather than
+  reporting a minimal-adjustment product in a column of re-optimised ones.
+- **The comparison carries the control that isolates what the agent's judgement added.** The row
+  `best deterministic design + one knockdown (exhaustive)` takes the same proven design the
+  agent was seeded with and tries every `knockdown_50` the agent could have played, one at a
+  time, under the same growth floor and gene resolution. On anaerobic succinate it reaches
+  9.9475 guaranteed in under a second where the shipped agent run reached 9.9459. That
+  OptKnock's formulation cannot express a knockdown is true; that finding the knockdown needs a
+  decision model does not follow, and this row is what tests the difference.
+- **A design the agent was handed is named as such.** With `seed_with_strain_design` on, the
+  agent can adopt a deterministic design whole in one move and then be scored against it. Where
+  the agent's design is a superset of a deterministic one, `contains_design` says which and the
+  verdict repeats it, because "the agent beat OptKnock" and "the agent added one edit to
+  OptKnock's answer" are not the same claim.
 
 **Reproducibility is partial and must be stated as such.** Every CMM solve in a run is
 deterministic. JEV's decisions are not guaranteed to repeat: repeated runs of the same
@@ -509,8 +543,9 @@ configuration have produced designs differing several-fold in product flux.
 `04_agent/transcript.jsonl` records every request and response so a single run can be
 audited; it does not make the method reproducible. A single run is evidence about that run.
 Claiming agent performance requires repeated runs and a stated distribution, which this
-release does not provide, and comparing it against FSEOF or OptKnock requires running those
-on the same model and condition, which SC-03 does not do.
+release does not provide. The within-run comparison above *does* run the deterministic methods
+on the same model and condition, which is a co-measurement of one run and not a benchmark study
+of the method.
 
 Predictions are computational hypotheses for experimental test, exactly as elsewhere in CMM.
 

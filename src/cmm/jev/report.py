@@ -141,6 +141,7 @@ def render_agent_report(result) -> str:
     wild = float(summary["wild_type_product_flux"])
     best = float(summary["best_product_flux"])
 
+    guaranteed = summary.get("best_guaranteed_product")
     if summary["beat_wild_type"]:
         fold = summary["fold_improvement"]
         gain = (
@@ -148,10 +149,26 @@ def render_agent_report(result) -> str:
             if isinstance(fold, (int, float))
             else " (the wild type made none)"
         )
+        # The guarantee leads, because it is what the design was chosen on and what the strain
+        # must make. The pFBA number beside it is the best case, and quoting only that credits
+        # a design with a flux the cell is free never to carry.
+        headline = (
+            f"{_escape(product)} is guaranteed at {guaranteed:.4g} mmol "
+            f"gDW&#8315;&#185; h&#8315;&#185; \u2014 the least this design can make while "
+            f"growing as fast as it can \u2014 against {wild:.4g} for the wild type"
+            if isinstance(guaranteed, (int, float))
+            else f"{_escape(product)} rose from {wild:.4g} to {best:.4g} mmol "
+            f"gDW&#8315;&#185; h&#8315;&#185;{gain}"
+        )
         lede = (
-            f"<p class='lede'><b>{_escape(product)} rose from {wild:.4g} to {best:.4g} "
-            f"mmol gDW&#8315;&#185; h&#8315;&#185;{gain}</b>, at a growth rate of "
-            f"{float(summary['best_growth']):.4g} h&#8315;&#185;.</p>"
+            f"<p class='lede'><b>{headline}</b>, at a growth rate of "
+            f"{float(summary['best_growth']):.4g} h&#8315;&#185;."
+            + (
+                f" Its best case is {best:.4g}{gain}."
+                if isinstance(guaranteed, (int, float))
+                else ""
+            )
+            + "</p>"
         )
     else:
         lede = (
@@ -165,6 +182,7 @@ def render_agent_report(result) -> str:
             "Round",
             "Question it answered",
             "Engineering",
+            "Guaranteed",
             "Product",
             "Growth",
             "Left undone",
@@ -176,6 +194,9 @@ def render_agent_report(result) -> str:
                 if not record.withheld
                 else "best without " + ", ".join(record.withheld),
                 "; ".join(record.interventions) or "nothing was applied",
+                "not measured"
+                if record.guaranteed_product is None
+                else f"{record.guaranteed_product:.4g}",
                 f"{record.product_flux:.4g}",
                 f"{record.growth:.4g}",
                 "; ".join(record.shortfall) or record.stopped_because,
@@ -205,13 +226,30 @@ def render_agent_report(result) -> str:
     )
 
     baselines = _table(
-        ["Method", "Design", "Product", "Growth", "Deterministic", "Note"],
+        [
+            "Method",
+            "Design",
+            "Guaranteed",
+            "Best case",
+            "Growth",
+            "Guaranteed at a shared growth rate",
+            "Contains",
+            "Deterministic",
+            "Note",
+        ],
         [
             (
                 row.method,
                 "; ".join(row.design) or "—",
+                "—"
+                if row.guaranteed_product is None
+                else f"{row.guaranteed_product:.4g}",
                 f"{row.product_flux:.4g}",
                 f"{row.growth:.4g}",
+                "—"
+                if row.guaranteed_at_matched_growth is None
+                else f"{row.guaranteed_at_matched_growth:.4g}",
+                row.contains_design or "—",
                 "yes" if row.deterministic else "no",
                 row.note,
             )

@@ -221,9 +221,20 @@ def jev_decision_figure(
     return fig
 
 
-def _short_method(name: str) -> str:
-    """A baseline's name with its parenthetical explanation dropped, for use on a plot."""
+#: Plot labels for the methods whose names are sentences. A name that reads well in a table
+#: column runs across half the axes here, and two of them overlap into one unreadable line.
+_PLOT_LABELS = {
+    "best deterministic design + one knockdown (exhaustive)": "proven + 1 knockdown",
+    "best amplification (outside the vocabulary)": "best amplification",
+    "best single gene deletion": "best single deletion",
+}
 
+
+def _short_method(name: str) -> str:
+    """A baseline's name shortened for a plot, where a table column's worth of words will not fit."""
+
+    if name in _PLOT_LABELS:
+        return _PLOT_LABELS[name]
     return name.split(" (")[0].strip()
 
 
@@ -281,6 +292,12 @@ def jev_design_space_figure(
     agent to OptKnock should be able to do it by looking, not by holding two tables side by
     side — and where the agent's point sits *below and left* of a deterministic one, that is
     worth seeing plainly rather than discovering in a footnote.
+
+    Every design is drawn twice: a filled marker at what it must make, and a hollow one at what
+    it could, joined by a line. The gap between them is the design's own uncertainty, and it is
+    the thing this plane exists to show — two designs whose best cases coincide can have
+    nothing in common once you ask what each one *guarantees*. A design drawn as a single
+    point is a design quoted at its best case, which is not what a strain does.
     """
 
     fig, ax, font = _new_figure(width, height, column_width)
@@ -326,6 +343,16 @@ def jev_design_space_figure(
             continue
         if row.product_flux != row.product_flux or row.growth != row.growth:
             continue  # a method that could not run has no point on this plane
+        guaranteed = getattr(row, "guaranteed_product", None)
+        if guaranteed is not None and abs(guaranteed - row.product_flux) > 1e-6:
+            ax.plot(
+                [float(row.growth), float(row.growth)],
+                [float(guaranteed), float(row.product_flux)],
+                color=PALETTE[6],
+                linewidth=1.0,
+                alpha=0.55,
+                zorder=3,
+            )
         ax.scatter(
             [float(row.growth)],
             [float(row.product_flux)],
@@ -336,18 +363,60 @@ def jev_design_space_figure(
             linewidth=1.2,
             zorder=4,
         )
+        if guaranteed is not None:
+            ax.scatter(
+                [float(row.growth)],
+                [float(guaranteed)],
+                marker="s",
+                s=46,
+                color=PALETTE[6],
+                edgecolor=PALETTE[6],
+                linewidth=1.2,
+                zorder=4,
+            )
         baseline_labels.append(
-            (float(row.growth), float(row.product_flux), _short_method(row.method))
+            (
+                float(row.growth),
+                float(guaranteed if guaranteed is not None else row.product_flux),
+                _short_method(row.method),
+            )
         )
 
     rounds = tuple(result.rounds)
-    best = max((record.product_flux for record in rounds), default=float("-inf"))
+
+    def _score(record) -> float:
+        """What a round is worth — the same quantity the run ranked it on."""
+
+        guaranteed = getattr(record, "guaranteed_product", None)
+        return float(guaranteed if guaranteed is not None else record.product_flux)
+
+    best = max((_score(record) for record in rounds), default=float("-inf"))
     round_labels: list[tuple[float, float, str]] = []
     for record in rounds:
-        is_best = record.product_flux >= best - 1e-9
+        score = _score(record)
+        is_best = score >= best - 1e-9
+        if abs(score - record.product_flux) > 1e-6:
+            ax.plot(
+                [float(record.growth), float(record.growth)],
+                [score, float(record.product_flux)],
+                color=PALETTE[2] if is_best else PALETTE[4],
+                linewidth=1.0,
+                alpha=0.6,
+                zorder=5,
+            )
+            ax.scatter(
+                [float(record.growth)],
+                [float(record.product_flux)],
+                marker="o",
+                s=60 if is_best else 40,
+                facecolor="white",
+                edgecolor=PALETTE[2] if is_best else PALETTE[4],
+                linewidth=1.0,
+                zorder=6,
+            )
         ax.scatter(
             [float(record.growth)],
-            [float(record.product_flux)],
+            [score],
             marker="o",
             s=110 if is_best else 70,
             color=PALETTE[2] if is_best else PALETTE[4],
@@ -355,9 +424,7 @@ def jev_design_space_figure(
             linewidth=1.0 if is_best else 0.6,
             zorder=6,
         )
-        round_labels.append(
-            (float(record.growth), float(record.product_flux), f"R{record.round_index}")
-        )
+        round_labels.append((float(record.growth), score, f"R{record.round_index}"))
     if rounds:
         ax.scatter([], [], marker="o", s=70, color=PALETTE[4], label="a round's design")
         ax.scatter(
@@ -372,6 +439,19 @@ def jev_design_space_figure(
         edgecolor=PALETTE[6],
         linewidth=1.2,
         label="deterministic method",
+    )
+    # Filled is what a design must make and hollow what it could, so a reader never has to be
+    # told which of the two numbers a point is.
+    ax.scatter([], [], marker="o", s=70, color="#6b7a88", label="guaranteed product")
+    ax.scatter(
+        [],
+        [],
+        marker="o",
+        s=50,
+        facecolor="white",
+        edgecolor="#6b7a88",
+        linewidth=1.0,
+        label="best case (pFBA)",
     )
 
     floor = float(result.config.growth_floor)
@@ -393,7 +473,7 @@ def jev_design_space_figure(
         font,
         xlabel="growth rate (h$^{-1}$)",
         ylabel=f"{product} flux (mmol gDW$^{{-1}}$ h$^{{-1}}$)",
-        title="What each round's design costs in growth",
+        title="What each design guarantees, and what it costs in growth",
     )
     ax.set_xlim(left=0.0)
     ax.set_ylim(bottom=0.0)
@@ -413,18 +493,37 @@ def jev_design_space_figure(
             color="#23313f",
             zorder=7,
         )
+    # Baseline labels are stacked rather than merged when two designs land near — but not on —
+    # the same point. Merging them would claim they are one design; printing both at the same
+    # offset makes two legible names into one unreadable line, which is how the exhaustive
+    # sweep and the amplification probe collided at growth 0.053.
+    placed: list[tuple[float, float, int]] = []
     for x, y, label in _merge_labels(baseline_labels, span_x=span_x, span_y=span_y):
+        row = 0
+        while any(
+            # Generous on x, because what collides is the *text*, which runs to the right of
+            # its point and is far wider than the marker; tight on y, because two labels at
+            # different heights do not overlap however close their points are in growth.
+            abs(px - x) <= span_x / 4.0 and abs(py - y) <= span_y / 12.0 and prow == row
+            for px, py, prow in placed
+        ):
+            row += 1
+        placed.append((x, y, row))
         ax.annotate(
             label,
             (x, y),
             textcoords="offset points",
-            xytext=(9, -11),
+            xytext=(9, -11 - 12 * row),
             fontsize=font["tick"] - 1,
             color="#5a6b7c",
             zorder=4,
         )
 
-    ax.legend(fontsize=font["tick"], frameon=False, loc="best")
+    # Pinned rather than "best". Matplotlib places a best-fit legend around the plotted
+    # artists and knows nothing about the annotations, so it kept landing on the method names
+    # in the upper right. The lower left is the one corner a design never occupies: a point
+    # there makes little product *and* grows slowly, which is dominated by the wild type.
+    ax.legend(fontsize=font["tick"], frameon=False, loc="lower left")
     fig.set_layout_engine("constrained")
     return fig
 

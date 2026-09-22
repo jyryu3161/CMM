@@ -50,7 +50,7 @@ then be comparing everything against instead of the organism.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import json
 import math
 from pathlib import Path
@@ -127,6 +127,12 @@ TickOutcome = Literal[
 
 #: Reasons a run can stop before playing every round, for the summary to state plainly.
 STOP_REQUESTED = "the run was stopped from the interface"
+
+#: Outcomes that leave the model carrying different bounds than it did before the tick. Only
+#: these can change what the design is worth, so only these are re-measured and only these can
+#: promote a new best. Everything else — a scan, a refused move, an ended round — leaves the
+#: bounds exactly as they were, and re-solving it would return the same numbers.
+_DESIGN_CHANGING_OUTCOMES = frozenset({"applied", "undone_by_agent"})
 
 
 class JevWorkflowError(RuntimeError):
@@ -458,6 +464,13 @@ class TickRecord:
     #: What the agent weighed at the second stage, and by how much. Kept for the same reason
     #: as the first stage's ranking: the runner-up is often the interesting row.
     action_ranking: tuple[tuple[str, float], ...] = ()
+    #: The worst and best product this design could make while growing as fast as it can,
+    #: measured loopless. The worst of the two is what CMM ranks a design on, because a pFBA
+    #: number is one optimum among many and a design whose minimum is zero is a strain that is
+    #: free to grow just as fast while making nothing. Measured only on the ticks that changed
+    #: the design, and only when ``measure_guaranteed_product`` is on.
+    guaranteed_product: float | None = None
+    guaranteed_best: float | None = None
 
     def to_row(self) -> dict[str, object]:
         return {
@@ -481,6 +494,8 @@ class TickRecord:
             "moma_product_flux": self.moma_product_flux,
             "moma_growth": self.moma_growth,
             "moma_distance": self.moma_distance,
+            "guaranteed_product": self.guaranteed_product,
+            "guaranteed_best": self.guaranteed_best,
             "n_active_interventions": self.n_active_interventions,
             "decision_cost_usd": self.decision_cost_usd,
             "decision_latency_s": self.decision_latency_s,
@@ -541,12 +556,17 @@ class RoundRecord:
     #: "the best design that does not use these". A portfolio a laboratory can choose from
     #: needs that question answered, not six attempts at the same one.
     withheld: tuple[str, ...] = ()
+    #: The worst product the design this round ended with could make while growing as fast as
+    #: it can. This is the number the round is ranked on; ``product_flux`` beside it is the
+    #: best case, and a wide gap between the two is the round's real result.
+    guaranteed_product: float | None = None
 
     def to_row(self) -> dict[str, object]:
         return {
             "round": self.round_index,
             "n_ticks": self.n_ticks,
             "product_flux": self.product_flux,
+            "guaranteed_product": self.guaranteed_product,
             "growth": self.growth,
             "n_interventions": len(self.interventions),
             "interventions": "; ".join(self.interventions),
@@ -580,6 +600,16 @@ class JevResult:
     best_growth: float
     best_interventions: tuple[Intervention, ...]
     final_interventions: tuple[Intervention, ...]
+    #: The quantity the best design was chosen on, and the one every claim about it should be
+    #: made in: the worst product it could make while growing as fast as it can. ``None`` only
+    #: when ``measure_guaranteed_product`` is off, in which case the whole run ranked on the
+    #: pFBA product instead and both ``ranked_on`` and the notes say so. A design whose
+    #: guarantee could not be measured is never promoted, so this is never a pFBA number.
+    best_guaranteed_product: float | None = None
+    wild_type_guaranteed_product: float | None = None
+    #: ``"guaranteed_product"`` or ``"product_flux"`` — which of the two the best design was
+    #: actually ranked on, so a reader never has to infer it.
+    ranked_on: str = "guaranteed_product"
     flux_frames: tuple[Mapping[str, float], ...] = ()
     transcript: tuple[Mapping[str, object], ...] = ()
     baselines: tuple["BaselineRow", ...] = ()
@@ -604,8 +634,11 @@ class JevResult:
         return {
             "product": self.config.product,
             "wild_type_product_flux": self.wild_type_product_flux,
+            "wild_type_guaranteed_product": self.wild_type_guaranteed_product,
             "wild_type_growth": self.wild_type_growth,
             "best_product_flux": self.best_product_flux,
+            "best_guaranteed_product": self.best_guaranteed_product,
+            "ranked_on": self.ranked_on,
             "best_growth": self.best_growth,
             "absolute_improvement": improvement,
             "fold_improvement": (
@@ -716,6 +749,13 @@ class _Board:
     #: this the agent re-proposed an identical rejected move every tick, because the state it
     #: sees afterwards is the same state it saw before.
     failed_moves: dict[str, set[str]] = field(default_factory=dict)
+    #: Proven designs ``adopt_best_design`` tried and CMM refused, as sorted knockout tuples.
+    #: ``failed_moves`` cannot hold these: it is keyed by reaction, and adopting a design is a
+    #: move on the whole board rather than on one reaction. Without it the refusal left no
+    #: trace anywhere the next tick could read, and the agent re-proposed the same design until
+    #: the identical-move breaker fired — 16 of the 35 ticks in the shipped succinate example,
+    #: four per round in four of its six rounds.
+    refused_designs: set[tuple[str, ...]] = field(default_factory=set)
     #: Scan results as they stood before each applied intervention, so an undo gives them back.
     scan_stack: list[ScanCache] = field(default_factory=list)
     #: Lines shown to the agent under ``notes`` in the state. Not history and not evidence
@@ -792,21 +832,31 @@ class _Board:
     def record_failure(self, reaction_id: str, action_name: str) -> None:
         self.failed_moves.setdefault(reaction_id, set()).add(action_name)
 
+    def record_refused_design(self, knockouts: Sequence[str]) -> None:
+        self.refused_designs.add(tuple(sorted(knockouts)))
+
+    def design_refused(self, knockouts: Sequence[str]) -> bool:
+        return tuple(sorted(knockouts)) in self.refused_designs
+
     def clear_failures(self) -> None:
         """Forget every rejected move, because the design they were rejected against is gone.
 
         Whether a move is feasible depends on the bounds it is applied to, so a rejection is
         a fact about one design and not about the move. Keeping it forever was measurably
-        wrong: ``force_on_high`` on ``FUM`` breaches the growth floor on the wild type and
-        succeeds once ``FRD7`` is carrying flux, and a run that had tried it early could
-        never reach the better design afterwards.
+        wrong: a deletion that breaches the growth floor on the wild type can be affordable
+        once another edit is standing, and a run that had tried it early could never reach the
+        better design afterwards.
 
         A rejection *is* still valid while the design does not change, which is the case that
         matters — a reverted move leaves the model exactly as it was, so its rejection
         survives until something else sticks.
+
+        A refused proven design is forgotten on the same grounds: a knockout set that breached
+        the growth floor on top of one design can be affordable on top of another.
         """
 
         self.failed_moves.clear()
+        self.refused_designs.clear()
 
     def exhausted(self, reaction_id: str, reference_flux: float) -> bool:
         """True when every move defined for this reaction has already been tried."""
@@ -984,11 +1034,17 @@ def run_jev_design(
     board = _Board(model=model, reference=reference, product=product, biomass=biomass)
     board.forbidden = forbidden
 
+    # The wild type's own guarantee, so the design the run promotes is compared against the
+    # same quantity it is ranked on rather than against a pFBA number.
+    wild_guaranteed, _ = _measure_guarantee(board, config)
+
     if config.seed_with_strain_design:
         # Before the first move: hand the agent what the deterministic designer already knows.
         # The reactions it names go on the board with the guaranteed product they buy, which
         # is the only way an escape route carrying no flux today can ever be considered.
-        seeded = _run_scan(board, "strain_design_scan", (), config)
+        seeded = _run_scan(
+            board, "strain_design_scan", (), config, use_linear_moma=use_linear_moma
+        )
         board.scans.completed.add("strain_design_scan")
         notes.append(f"strain design seeded the board before the first move: {seeded}")
 
@@ -1028,7 +1084,16 @@ def run_jev_design(
     stopped_by_user = False
     best_product = wild_product
     best_growth = wild_growth
+    best_guaranteed = wild_guaranteed
     best_interventions: tuple[Intervention, ...] = ()
+    # What designs are ranked on. CMM's rule for strain design is the guaranteed product, not
+    # the maximum: a pFBA optimum is one optimum among many, and a design whose minimum product
+    # at maximum growth is zero is one the strain is free to grow just as fast without using.
+    # The pFBA product is used only when the guarantee was never asked for, so the run never
+    # mixes the two in one comparison; either way it records which it used.
+    best_rank = wild_guaranteed if wild_guaranteed is not None else wild_product
+    ranked_on = "guaranteed_product" if wild_guaranteed is not None else "product_flux"
+    guarantee_fell_back = False
 
     current_product, current_growth = wild_product, wild_growth
     stop_run = False
@@ -1117,7 +1182,13 @@ def run_jev_design(
                 break
 
             if config.screen_interventions and board.screen_stale:
-                _run_scan(board, "intervention_screen", candidates, config)
+                _run_scan(
+                    board,
+                    "intervention_screen",
+                    candidates,
+                    config,
+                    use_linear_moma=use_linear_moma,
+                )
                 board.screen_stale = False
                 candidates = board.scans.apply(candidates)
 
@@ -1236,6 +1307,13 @@ def run_jev_design(
                 stop_run = True
                 stopped_by_user = True
                 break
+            if tick.outcome in _DESIGN_CHANGING_OUTCOMES:
+                worst, best_case = _measure_guarantee(board, config)
+                if worst is None and config.measure_guaranteed_product:
+                    guarantee_fell_back = True
+                tick = replace(
+                    tick, guaranteed_product=worst, guaranteed_best=best_case
+                )
             ticks.append(tick)
             board.history.append(tick.headline())
 
@@ -1263,15 +1341,35 @@ def run_jev_design(
             if on_tick is not None:
                 on_tick(tick, post_fluxes)
 
+            # Only a tick that changed the bounds can change what the design is worth, and
+            # it is the only tick carrying a fresh guarantee, so it is the only one that can
+            # promote. Comparing a scan's pFBA number against a stored guarantee would be
+            # comparing two different quantities.
             if (
-                current_growth >= config.growth_floor
-                and current_product > best_product + 1e-9
+                tick.outcome in _DESIGN_CHANGING_OUTCOMES
+                and current_growth >= config.growth_floor
+                # A design whose guarantee was asked for and could not be measured is skipped
+                # rather than ranked on its pFBA product. Ranking it would put two different
+                # quantities in one comparison — a best case against a worst case — and the
+                # design that won would depend on which of them happened to be measurable.
+                and not (
+                    config.measure_guaranteed_product
+                    and tick.guaranteed_product is None
+                )
             ):
-                best_product = current_product
-                best_growth = current_growth
-                best_interventions = tuple(board.interventions)
-                board.best_snapshot = best_interventions
-                board.best_score = current_product
+                rank = (
+                    tick.guaranteed_product
+                    if tick.guaranteed_product is not None
+                    else current_product
+                )
+                if rank > best_rank + 1e-9:
+                    best_rank = rank
+                    best_product = current_product
+                    best_growth = current_growth
+                    best_guaranteed = tick.guaranteed_product
+                    best_interventions = tuple(board.interventions)
+                    board.best_snapshot = best_interventions
+                    board.best_score = rank
 
             if tick.outcome == "end_round":
                 ended_early = True
@@ -1290,6 +1388,10 @@ def run_jev_design(
             None,
         )
         round_ticks = ticks[-ticks_this_round:] if ticks_this_round else []
+        # The round is scored on the design it ended with, measured now rather than read back
+        # from whichever tick last happened to change it: an undo, a restore or a refused move
+        # can leave the standing design different from the last one that was measured.
+        round_guaranteed, _ = _measure_guarantee(board, config)
         withheld = tuple(sorted(board.round_bans))
         shortfall = _round_shortfall(
             board,
@@ -1298,6 +1400,7 @@ def run_jev_design(
             ticks=round_ticks,
             product=current_product,
             growth=current_growth,
+            use_linear_moma=use_linear_moma,
         )
         stopped = _why_the_round_stopped(
             round_ticks, ended_early=ended_early, steps=config.steps_per_round
@@ -1313,8 +1416,20 @@ def run_jev_design(
             + f"round {round_index} reached {current_product:.4g} product at "
             f"{current_growth:.4g} growth with {design}"
             + (
+                f", guaranteed {round_guaranteed:.4g} \u2014 the worst it could make while "
+                "growing that fast, which is what designs are ranked on"
+                if round_guaranteed is not None
+                else ""
+            )
+            + (
                 f" (best so far: {board.best_score:.4g})"
-                if board.best_score > current_product + 1e-9
+                if board.best_score
+                > (
+                    round_guaranteed
+                    if round_guaranteed is not None
+                    else current_product
+                )
+                + 1e-9
                 else " (the best round so far)"
             )
             + f". It stopped because {stopped}."
@@ -1357,6 +1472,7 @@ def run_jev_design(
                 signature=design_key,
                 repeated=repeated,
                 withheld=withheld,
+                guaranteed_product=round_guaranteed,
             )
         )
         if idle_rounds >= _MAX_IDLE_ROUNDS:
@@ -1369,6 +1485,22 @@ def run_jev_design(
         if stop_run:
             break
 
+    if guarantee_fell_back:
+        notes.append(
+            "the guaranteed product could not be measured on at least one design this run "
+            "reached, and those designs were left out of the ranking rather than scored on "
+            "their pFBA product, which is a best case and not the same quantity. If the best "
+            "design reported here looks weaker than a design named in 02_game/ticks.csv, this "
+            "is why."
+        )
+    elif not config.measure_guaranteed_product:
+        ranked_on = "product_flux"
+        notes.append(
+            "measure_guaranteed_product was off, so designs were ranked on the pFBA product: "
+            "the best the strain could make, not the worst it must. A design whose minimum at "
+            "maximum growth is zero cannot be told apart from one that is growth-coupled."
+        )
+
     provenance = {
         **run_provenance(model, method="jev_target_design", seed=config.seed),
         **config.to_provenance(),
@@ -1380,15 +1512,34 @@ def run_jev_design(
             else ("moma_l1" if use_linear_moma else "moma_l2")
         ),
         "wild_type_reference": "pfba",
+        "designs_ranked_on": ranked_on,
+        # Two hashes in one bundle, and they are not meant to agree. Saying so here beats
+        # leaving a reader to discover the difference and assume one of them is wrong.
+        "model_sha256_covers": (
+            "the model structure as solved — reactions, bounds (including this run's "
+            "condition), GPRs and objective — not the bytes of the archived SBML. The "
+            "manifest's checksum for model/ is the file's own SHA-256, so the two differ "
+            "whenever a medium or condition was applied, which is almost always."
+        ),
         "cofactor_pools_resolved_by": "formula"
         if pools.by_formula
         else "bigg_id_stems",
         "cofactor_pools_not_found": list(pools.missing),
     }
 
-    # The design the run ended on, captured before the comparison below strips the board
-    # back to the unmodified model. Reading it afterwards returned an empty design.
+    # The design the run ended on, captured before the board is rewound. Reading it
+    # afterwards returned an empty design.
     final_interventions = tuple(board.interventions)
+
+    # Everything below this line measures the *unmodified* model: the baseline comparison
+    # applies each method's design in its own reverting context, and the envelope is the
+    # plane those designs are placed on. So the board is rewound here, unconditionally.
+    # It used to be rewound inside the comparison branch, which meant a run with the
+    # comparison switched off — or one cut short by a stop request or a transport error,
+    # both of which skip the branch — measured its envelope on whatever design the last
+    # round happened to end with, and labelled it "the model as loaded".
+    for _ in list(board.interventions):
+        board.undo()
 
     baselines: tuple["BaselineRow", ...] = ()
     if stopped_by_user and config.run_baseline_comparison:
@@ -1399,10 +1550,6 @@ def run_jev_design(
     if config.run_baseline_comparison and not stopped_by_user:
         from cmm.jev.benchmark import compare_with_baselines
 
-        # Every method's design is applied by the comparison itself, within its own reverting
-        # context, so the board's edits must not still be standing while it runs.
-        for _ in list(board.interventions):
-            board.undo()
         try:
             baselines = compare_with_baselines(
                 model,
@@ -1452,6 +1599,9 @@ def run_jev_design(
         best_growth=best_growth,
         best_interventions=best_interventions,
         final_interventions=final_interventions,
+        best_guaranteed_product=best_guaranteed,
+        wild_type_guaranteed_product=wild_guaranteed,
+        ranked_on=ranked_on,
         flux_frames=tuple(flux_frames),
         transcript=tuple(transcript),
         baselines=baselines,
@@ -1506,6 +1656,9 @@ def _play_tick(
             design
             for design in board.scans.designs
             if len(design[1]) <= knockout_room
+            # A design this round already had refused is not on offer again. Re-offering it
+            # cost four identical reverted steps a round in the shipped example.
+            and not board.design_refused(design[1])
             and not set(design[1]) & {i.reaction_id for i in board.interventions}
             # A proven design that reaches through a withheld reaction would walk straight
             # back into the design the cut exists to move away from.
@@ -1721,7 +1874,9 @@ def _play_tick(
 
     # -- LOOK: run a CMM analysis, change nothing ---------------------------
     if action.kind == "look":
-        reason = _run_scan(board, action.name, candidates, config)
+        reason = _run_scan(
+            board, action.name, candidates, config, use_linear_moma=use_linear_moma
+        )
         board.scans.completed.add(action.name)
         return frame(
             action=action.name,
@@ -1786,8 +1941,8 @@ def _play_tick(
         board.record_failure(candidate.reaction_id, action.name)
         # The move was too strong, not wrong. Say that the same move has a gentler version
         # still on offer for this reaction, because the agent does not infer it: watching a
-        # run, a refused ``force_on_high`` sent it to a different reaction and left behind
-        # what ``force_on_low`` on the same one would have collected.
+        # run, a refused deletion sent it to a different reaction and left behind what the
+        # knockdown on the same one would have collected.
         gentler = GENTLER_ALTERNATIVE.get(action.name)
         still_open = (
             gentler is not None
@@ -1923,6 +2078,7 @@ def _adopt_design(
         except (ActionNotApplicable, KeyError) as error:
             for _ in applied:
                 board.undo()
+            board.record_refused_design(knockouts)
             return frame(
                 action=ADOPT_ACTION.name,
                 outcome="not_applicable",
@@ -1937,6 +2093,7 @@ def _adopt_design(
     if solution.status != "optimal":
         for _ in applied:
             board.undo()
+        board.record_refused_design(knockouts)
         return frame(
             action=ADOPT_ACTION.name,
             outcome="reverted_infeasible",
@@ -1952,6 +2109,7 @@ def _adopt_design(
     if new_growth < config.growth_floor:
         for _ in applied:
             board.undo()
+        board.record_refused_design(knockouts)
         return frame(
             action=ADOPT_ACTION.name,
             outcome="reverted_growth_floor",
@@ -2122,6 +2280,7 @@ def _round_shortfall(
     ticks: Sequence[TickRecord],
     product: float,
     growth: float,
+    use_linear_moma: bool = False,
 ) -> tuple[str, ...]:
     """What this round left on the table, measured on the design it ended with.
 
@@ -2150,7 +2309,13 @@ def _round_shortfall(
             )
         )
         if current:
-            _run_scan(board, "intervention_screen", current, config)
+            _run_scan(
+                board,
+                "intervention_screen",
+                current,
+                config,
+                use_linear_moma=use_linear_moma,
+            )
             untaken = sorted(
                 (
                     (gain, reaction_id, move)
@@ -2233,21 +2398,62 @@ def _run_scan(
     name: str,
     candidates: Sequence[CandidateEvidence],
     config: JevConfig,
+    *,
+    use_linear_moma: bool = False,
 ) -> str:
-    """Execute a LOOK move: a real CMM analysis whose answer enriches the next frame."""
+    """Execute a LOOK move: a real CMM analysis whose answer enriches the next frame.
+
+    ``use_linear_moma`` is the variant the run already resolved against the active solver, not
+    a second decision made here. The scan used to derive its own from ``config.run_moma``,
+    which answers a different question — whether MOMA runs at all — so on an LP-only solver it
+    asked for the L2 distance the rest of the run had already fallen back from, and spent the
+    agent's step reporting that MOMA could not run.
+    """
 
     if name == "essentiality_scan":
+        # The deletion the agent may actually make, not a bound edit on the named reaction.
+        # A gene deletion takes every reaction that gene set stops with it, so scoring the one
+        # reaction answers a question about a strain nobody can build — and it wrote its answer
+        # into the same ``scans.essential`` the intervention screen fills from the gene edit,
+        # so the flag's meaning depended on which scan had run last. On ``e_coli_core`` the two
+        # readings disagree on 42 of the 69 gene-associated reactions.
         n_essential = 0
+        n_skipped = 0
         for candidate in candidates:
-            reaction = board.model.reactions.get_by_id(candidate.reaction_id)
-            saved = reaction.bounds
-            reaction.bounds = (0.0, 0.0)
+            try:
+                trial = build_intervention(
+                    board.model,
+                    candidate.reaction_id,
+                    ACTION_CATALOGUE["knockout"],
+                    board.reference.fluxes,
+                )
+            except (
+                ActionNotApplicable
+            ):  # pragma: no cover - a deletion is always defined
+                n_skipped += 1
+                continue
+            saved = [
+                (rid, board.model.reactions.get_by_id(rid).bounds)
+                for rid, _, _ in trial.bounds
+            ]
+            for rid, lower, upper in trial.bounds:
+                board.model.reactions.get_by_id(rid).bounds = (lower, upper)
             growth = board.model.slim_optimize(error_value=float("nan"))
-            reaction.bounds = saved
+            for rid, bounds in saved:
+                board.model.reactions.get_by_id(rid).bounds = bounds
             essential = math.isnan(growth) or growth < config.growth_floor
             board.scans.essential[candidate.reaction_id] = bool(essential)
             n_essential += int(essential)
-        return f"tested {len(candidates)} reactions; {n_essential} are essential under this floor"
+        tested = len(candidates) - n_skipped
+        skipped = (
+            f"; {n_skipped} could not be expressed as a gene deletion"
+            if n_skipped
+            else ""
+        )
+        return (
+            f"deleted the genes behind {tested} reactions; {n_essential} are essential "
+            f"under this floor{skipped}"
+        )
 
     if name == "fseof_scan":
         from cmm.features.production import fseof
@@ -2271,9 +2477,7 @@ def _run_scan(
             return "there is no design yet; MOMA and ROOM would compare the wild type to itself"
         lines = []
         try:
-            adjusted = moma(
-                board.model, board.reference, linear=config.run_moma is False
-            )
+            adjusted = moma(board.model, board.reference, linear=use_linear_moma)
             if adjusted.status == "optimal" and adjusted.distance is not None:
                 lines.append(
                     f"MOMA: the cell has to move {adjusted.distance:.4g} from the wild-type "
@@ -2282,24 +2486,34 @@ def _run_scan(
                 )
         except Exception as error:
             lines.append(f"MOMA could not run: {error}")
-        try:
-            switched = knockout_comparison(
-                board.model,
-                board.reference,
-                [i.reaction_id for i in board.interventions if i.mode == "knockout"]
-                or [board.interventions[0].reaction_id],
-                method="room",
+        # ROOM's question is "which reactions have to change if these are deleted", so it
+        # takes deletions and nothing else. Substituting a knockdown's reaction when the design
+        # carries no deletion — which is what this did — reports the switching cost of a strain
+        # nobody proposed: a full deletion of a reaction the design only halves.
+        knockouts = [i.reaction_id for i in board.interventions if i.mode == "knockout"]
+        if not knockouts:
+            lines.append(
+                "ROOM was not run: this design is knockdowns only, and ROOM scores complete "
+                "deletions"
             )
-            if (
-                switched.status == "optimal"
-                and switched.n_changed_reactions is not None
-            ):
-                lines.append(
-                    f"ROOM: {switched.n_changed_reactions:.0f} reactions have to change "
-                    "their flux for this design to work"
+        else:
+            try:
+                switched = knockout_comparison(
+                    board.model,
+                    board.reference,
+                    knockouts,
+                    method="room",
                 )
-        except Exception as error:
-            lines.append(f"ROOM could not run: {error}")
+                if (
+                    switched.status == "optimal"
+                    and switched.n_changed_reactions is not None
+                ):
+                    lines.append(
+                        f"ROOM: {switched.n_changed_reactions:.0f} reactions have to change "
+                        "their flux for this design to work"
+                    )
+            except Exception as error:
+                lines.append(f"ROOM could not run: {error}")
         return "; ".join(lines) or "neither MOMA nor ROOM could be run on this design"
 
     if name == "intervention_screen":
@@ -2432,6 +2646,26 @@ def _run_scan(
         return note
 
     return f"{name} is not a known scan"  # pragma: no cover - vocabulary is closed
+
+
+def _measure_guarantee(
+    board: _Board, config: JevConfig
+) -> tuple[float | None, float | None]:
+    """The design's guaranteed and best-case product, or ``(None, None)``.
+
+    One loopless FVA on the product reaction with growth pinned at its maximum. Never fatal:
+    a measurement that cannot be taken leaves the run ranking on the pFBA product, which the
+    run records rather than passing off as the guarantee.
+    """
+
+    if not config.measure_guaranteed_product:
+        return (None, None)
+    measured = guaranteed_product(
+        board.model, product=board.product, biomass=board.biomass
+    )
+    if measured is None:
+        return (None, None)
+    return (float(measured[0]), float(measured[1]))
 
 
 def _moma_snapshot(

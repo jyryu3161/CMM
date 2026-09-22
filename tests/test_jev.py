@@ -1399,15 +1399,18 @@ def test_the_comparison_survives_a_method_that_cannot_run(
     monkeypatch.setattr(
         benchmark,
         "_strain_design_row",
-        lambda *a, **k: benchmark.BaselineRow(
-            method=a[1],
-            design=(),
-            product_flux=float("nan"),
-            growth=float("nan"),
-            seconds=0.0,
-            deterministic=True,
-            status="failed",
-            note="not installed",
+        lambda *a, **k: (
+            benchmark.BaselineRow(
+                method=a[1],
+                design=(),
+                product_flux=float("nan"),
+                growth=float("nan"),
+                seconds=0.0,
+                deterministic=True,
+                status="failed",
+                note="not installed",
+            ),
+            {},
         ),
     )
     rows = benchmark.compare_with_baselines(
@@ -3032,3 +3035,350 @@ def test_the_figure_survives_a_run_that_produced_nothing(anaerobic_core_path) ->
     )
     result = run_jev_design(config, client=ScriptedClient([("end_round", None)] * 3))
     assert jev_design_space_figure(result).axes
+
+
+# ---------------------------------------------------------------------------
+# what a design is worth, and what it is compared against
+# ---------------------------------------------------------------------------
+
+
+def test_the_envelope_is_the_unmodified_models_even_with_no_comparison(
+    anaerobic_core_path, anaerobic_core
+) -> None:
+    """The backdrop every design is placed on must not be the last design's own envelope.
+
+    The board used to be rewound only inside the baseline-comparison branch, so a run with the
+    comparison off — or one cut short, which skips the same branch — measured its envelope
+    through whatever bounds the final round happened to leave standing, and labelled it the
+    model as loaded.
+    """
+
+    from cmm.features.production import production_envelope
+
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        condition=ANAEROBIC,
+        rounds=1,
+        steps_per_round=3,
+        growth_floor=0.01,
+        run_moma=False,
+        run_baseline_comparison=False,
+        seed_with_strain_design=False,
+        screen_interventions=False,
+    )
+    result = run_jev_design(
+        config,
+        client=ScriptedClient([("PFL", "knockout"), ("end_round", None)]),
+    )
+    assert result.final_interventions, (
+        "the run has to have applied something to be a test"
+    )
+
+    expected = production_envelope(
+        anaerobic_core, "EX_succ_e", objective="Biomass_Ecoli_core", points=24
+    )
+    measured = [(round(p[0], 6), round(p[2], 6)) for p in result.envelope]
+    reference = [
+        (round(float(point.product_flux), 6), round(float(point.growth_max), 6))
+        for point in expected.points
+    ]
+    assert measured == reference
+
+
+def test_a_refused_proven_design_is_not_offered_again(anaerobic_core_path) -> None:
+    """A design CMM refuses comes off the board instead of being re-proposed.
+
+    ``failed_moves`` is keyed by reaction, and adopting a design is a move on the whole board,
+    so the refusal used to leave no trace the next tick could read. The agent then proposed the
+    same design every step until the identical-move breaker cut the round — 16 of the 35 ticks
+    in the shipped succinate example, four per round in four of its six rounds.
+
+    The agent here asks to adopt on every one of its six steps. Each distinct proven design may
+    be refused once; what must not happen is the budget being spent on refusals. With the
+    designs exhausted the move is no longer offered at all, so the round ends on the agent's
+    own ``end_round`` rather than on the breaker.
+    """
+
+    pytest.importorskip("straindesign")
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        condition=ANAEROBIC,
+        rounds=1,
+        steps_per_round=6,
+        # High enough that every proven design breaches it, so every adopt is refused.
+        growth_floor=0.18,
+        run_moma=False,
+        run_baseline_comparison=False,
+        seed_with_strain_design=True,
+        screen_interventions=False,
+        design_max_solutions=1,
+    )
+    result = run_jev_design(
+        config, client=ScriptedClient([("adopt_best_design", None)] * 6)
+    )
+    adopts = [tick for tick in result.ticks if tick.action == "adopt_best_design"]
+    assert adopts, "the seeded designs have to have been offered at least once"
+    assert all(tick.outcome == "reverted_growth_floor" for tick in adopts)
+    # One refusal per distinct design. ``design_max_solutions=1`` leaves at most one design per
+    # designer, so at most two; the old behaviour was four, the circuit breaker's limit.
+    assert len(adopts) <= 2, [tick.headline() for tick in adopts]
+    assert result.ticks[-1].outcome == "end_round", result.ticks[-1].headline()
+
+
+def test_a_refusal_is_forgotten_once_the_design_it_was_measured_against_changes() -> (
+    None
+):
+    """A knockout set refused on one design can be affordable on another.
+
+    The same reasoning as ``clear_failures``: whether a design holds the growth floor is a fact
+    about the bounds it was applied to, not about the design itself, so the memory has to be
+    cleared the moment something else sticks.
+    """
+
+    from cmm.jev.engine import _Board
+
+    board = _Board.__new__(_Board)
+    board.failed_moves = {}
+    board.refused_designs = set()
+
+    board.record_refused_design(["THD2", "ACALD"])
+    assert board.design_refused(("ACALD", "THD2"))
+    # Order is not a different design.
+    assert board.design_refused(["THD2", "ACALD"])
+    assert not board.design_refused(["ACALD"])
+
+    board.clear_failures()
+    assert not board.design_refused(["ACALD", "THD2"])
+
+
+def test_the_best_design_is_the_one_with_the_best_guarantee(
+    anaerobic_core_path,
+) -> None:
+    """Designs are ranked on what they must make, not on what they could.
+
+    CMM's rule for strain design is the guaranteed product (AGENTS.md §3 rule 8). The JEV path
+    used to promote on the pFBA product, which is one optimum among many: a design whose
+    minimum at maximum growth is zero is one the strain may grow just as fast without using.
+    """
+
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        condition=ANAEROBIC,
+        rounds=1,
+        steps_per_round=6,
+        growth_floor=0.01,
+        run_moma=False,
+        run_baseline_comparison=False,
+        seed_with_strain_design=False,
+        screen_interventions=False,
+        measure_guaranteed_product=True,
+    )
+    result = run_jev_design(
+        config,
+        client=ScriptedClient(
+            [("PFL", "knockout"), ("ACALD", "knockout"), ("end_round", None)]
+        ),
+    )
+    assert result.ranked_on == "guaranteed_product"
+    assert result.best_guaranteed_product is not None
+    measured = [
+        tick.guaranteed_product
+        for tick in result.ticks
+        if tick.guaranteed_product is not None
+    ]
+    assert measured, "a design-changing tick has to carry its guarantee"
+    assert result.best_guaranteed_product == max(measured)
+    # And the headline is never the best-case number dressed as the guarantee.
+    assert result.best_guaranteed_product <= result.best_product_flux + 1e-6
+
+
+def test_the_comparison_reads_every_design_at_one_growth_rate(anaerobic_core) -> None:
+    """A design that spends growth for product has moved along the trade-off, not beaten it.
+
+    Measured on the shipped succinate example: the agent's four-edit design reaches 9.946 at
+    growth 0.0547 while OptKnock reaches 9.911 at 0.0906, which the old verdict reported as a
+    0.4% win. Held at one growth rate the two are nothing alike, in the agent's favour — its
+    design guarantees about 9.77 where OptKnock's guarantees about 7.60, because the knockdown
+    buys a guarantee rather than a bigger optimum.
+    """
+
+    pytest.importorskip("straindesign")
+    from cmm.jev.actions import ACTION_CATALOGUE, build_intervention
+    from cmm.jev.benchmark import (
+        _AGENT_LABEL,
+        compare_with_baselines,
+        comparison_summary,
+    )
+    from cmm.core.simulation import pfba
+
+    reference = pfba(anaerobic_core).fluxes
+    design = [
+        build_intervention(anaerobic_core, rid, ACTION_CATALOGUE[action], reference)
+        for rid, action in (
+            ("ACALD", "knockout"),
+            ("D_LACt2", "knockout"),
+            ("THD2", "knockout"),
+            ("ACKr", "knockdown_50"),
+        )
+    ]
+    rows = compare_with_baselines(
+        anaerobic_core,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        growth_floor=0.05,
+        jev_interventions=design,
+        max_knockouts=3,
+        max_solutions=5,
+        seed=0,
+    )
+    by_method = {row.method: row for row in rows}
+    agent = by_method[_AGENT_LABEL]
+    optknock = by_method["OptKnock"]
+
+    # Every scorable row carries both quantities, so no column holds two meanings.
+    assert all(
+        row.guaranteed_product is not None
+        for row in rows
+        if row.status == "optimal" and row.design
+    )
+    assert agent.guaranteed_product == pytest.approx(9.9457, abs=1e-3)
+    assert optknock.guaranteed_product == pytest.approx(9.9098, abs=1e-3)
+    assert agent.guaranteed_at_matched_growth == pytest.approx(9.771, abs=1e-2)
+    assert optknock.guaranteed_at_matched_growth == pytest.approx(7.597, abs=1e-2)
+
+    verdict = str(comparison_summary(rows, product="EX_succ_e")["verdict"])
+    assert "0.05472" in verdict and "0.09065" in verdict
+    assert "guaranteed product" in verdict
+
+
+def test_the_comparison_names_the_design_the_agent_was_handed(anaerobic_core) -> None:
+    """A design seeded with OptKnock's answer and scored against it is not two methods."""
+
+    pytest.importorskip("straindesign")
+    from cmm.jev.actions import ACTION_CATALOGUE, build_intervention
+    from cmm.jev.benchmark import (
+        _AGENT_LABEL,
+        compare_with_baselines,
+        comparison_summary,
+    )
+    from cmm.core.simulation import pfba
+
+    reference = pfba(anaerobic_core).fluxes
+    design = [
+        build_intervention(anaerobic_core, rid, ACTION_CATALOGUE["knockout"], reference)
+        for rid in ("ACALD", "D_LACt2", "THD2")
+    ]
+    design.append(
+        build_intervention(
+            anaerobic_core, "ACKr", ACTION_CATALOGUE["knockdown_50"], reference
+        )
+    )
+    rows = compare_with_baselines(
+        anaerobic_core,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        growth_floor=0.05,
+        jev_interventions=design,
+        max_knockouts=3,
+        max_solutions=5,
+        seed=0,
+    )
+    agent = next(row for row in rows if row.method == _AGENT_LABEL)
+    assert agent.contains_design is not None
+    assert "OptKnock" in agent.contains_design
+    verdict = str(comparison_summary(rows, product="EX_succ_e")["verdict"])
+    assert "contains" in verdict
+
+
+def test_exhausting_the_vocabulary_is_a_row_the_agent_has_to_beat(
+    anaerobic_core,
+) -> None:
+    """The control: the same proven design plus the best knockdown, found by trying them all.
+
+    "OptKnock cannot express a knockdown" is true and is not the same claim as "finding the
+    knockdown needs judgement". There are only as many such moves as there are reactions
+    carrying flux, and on ``e_coli_core`` trying every one of them takes under a second and
+    reaches about 9.948 guaranteed — slightly past the 9.946 the shipped agent run reached.
+    """
+
+    pytest.importorskip("straindesign")
+    from cmm.jev.benchmark import _SWEEP_LABEL, compare_with_baselines
+
+    rows = compare_with_baselines(
+        anaerobic_core,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        growth_floor=0.05,
+        max_knockouts=3,
+        max_solutions=5,
+        seed=0,
+        run_single_gene_screen=False,
+    )
+    sweep = next(row for row in rows if row.method == _SWEEP_LABEL)
+    assert sweep.status == "optimal"
+    assert sweep.deterministic
+    assert sweep.guaranteed_product == pytest.approx(9.9475, abs=1e-3)
+    assert sweep.contains_design == "OptKnock"
+
+
+def test_every_row_scores_the_strain_that_would_be_built(anaerobic_core) -> None:
+    """The deterministic designs are gene edits too, not bare reaction knockouts.
+
+    The designers name reactions and the row used to zero exactly those, while the agent's row
+    has always carried the whole consequence of its gene edits. Two different kinds of object
+    in one column is not a comparison.
+    """
+
+    pytest.importorskip("straindesign")
+    from cmm.jev.actions import ACTION_CATALOGUE, build_intervention
+    from cmm.jev.benchmark import compare_with_baselines
+    from cmm.core.simulation import pfba
+
+    rows = compare_with_baselines(
+        anaerobic_core,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        growth_floor=0.05,
+        max_knockouts=3,
+        max_solutions=5,
+        seed=0,
+        run_single_gene_screen=False,
+    )
+    optknock = next(row for row in rows if row.method == "OptKnock")
+    assert optknock.design
+
+    reference = pfba(anaerobic_core).fluxes
+    expected: set[str] = set()
+    for reaction_id in optknock.design:
+        intervention = build_intervention(
+            anaerobic_core, reaction_id, ACTION_CATALOGUE["knockout"], reference
+        )
+        expected |= {rid for rid, _, _ in intervention.bounds}
+    assert set(optknock.constrained) == expected
+
+
+def test_a_knockdown_that_cannot_be_expressed_is_refused_not_crashed(
+    anaerobic_core,
+) -> None:
+    """Halving a reaction held above the cap is not a constraint that exists.
+
+    ``ATPM`` is pinned at a maintenance floor of 8.39, so capping it at half of that would ask
+    for a lower bound above its own upper bound. cobra raises from inside the bounds setter
+    with nothing to say which move caused it; the move has to refuse itself first.
+    """
+
+    from cmm.jev.actions import (
+        ACTION_CATALOGUE,
+        ActionNotApplicable,
+        build_intervention,
+    )
+    from cmm.core.simulation import pfba
+
+    reference = pfba(anaerobic_core).fluxes
+    with pytest.raises(ActionNotApplicable, match="half its flux"):
+        build_intervention(
+            anaerobic_core, "ATPM", ACTION_CATALOGUE["knockdown_50"], reference
+        )

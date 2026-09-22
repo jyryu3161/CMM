@@ -423,26 +423,54 @@ Read these together with the tick table:
 ## Measured against the deterministic methods
 
 Every JEV run scores itself against the methods it sits beside, on the same model, the same
-condition and the same growth floor, with every design evaluated the same way — apply it,
-solve pFBA, read the product and the growth. The table is `05_baseline/comparison.csv` and
-the verdict is in `00_summary.json`.
+condition and the same growth floor, with every design evaluated the same way — resolve its
+gene edits, apply them, solve pFBA, and measure the **guaranteed product**: the least the
+design can make while growing as fast as it can, computed loopless. The table is
+`05_baseline/comparison.csv` and the verdict is in `00_summary.json`.
+
+**The guarantee, not the pFBA product, is what a design is ranked on**, here and in the run
+itself. A pFBA number is one optimum among many, and a design whose minimum at maximum growth
+is zero is one the strain is free to grow just as fast without ever using. This is CMM's rule
+for strain design everywhere else (AGENTS.md §3 rule 8) and the JEV path follows it.
 
 On the shipped anaerobic succinate example:
 
-| Method | Best succinate (mmol gDW⁻¹ h⁻¹) | Growth (h⁻¹) | Time | Deterministic |
-|---|---:|---:|---:|:---:|
-| Wild type | 0.000 | 0.212 | — | — |
-| Best single gene deletion, MOMA-L2, 71 genes | 0.211 | 0.165 | 3.4 s | yes |
-| **OptKnock**, 3 knockouts | **9.911** | 0.091 | 0.8 s | yes |
-| **RobustKnock**, 3 knockouts | **9.911** | 0.091 | 0.9 s | yes |
-| **JEV agent**, 3 deletions + 1 knockdown | **9.946** | 0.055 | 29 steps, $0.009 | **no** |
-| *Best amplification on top of that design* | *10.039* | *0.053* | — | *outside the vocabulary* |
+| Method | Guaranteed succinate | Best case | Growth (h⁻¹) | Guaranteed at a shared growth rate | Deterministic |
+|---|---:|---:|---:|---:|:---:|
+| Wild type | 0.000 | 0.000 | 0.212 | 0.000 | — |
+| Best single gene deletion | 0.000 | 0.000 | 0.208 | 0.000 | yes |
+| **OptKnock**, 3 knockouts | **9.910** | 9.911 | 0.091 | 7.597 | yes |
+| **RobustKnock**, 3 knockouts | **9.910** | 9.911 | 0.091 | 7.597 | yes |
+| **Same design + one knockdown, exhaustive** | **9.948** | 9.948 | 0.053 | 9.948 | yes |
+| **JEV agent**, 3 deletions + 1 knockdown | **9.946** | 9.946 | 0.055 | 9.771 | **no** |
+| *Best amplification on top of that design* | *10.031* | *10.039* | *0.053* | *9.919* | *outside the vocabulary* |
 
 Read this carefully, because the obvious reading is wrong in several directions.
 
-**A single gene deletion cannot solve this problem at all.** The best of 71 reaches 0.211.
-Anaerobic succinate needs several routes closed at once, and no single-deletion screen —
-however it is scored — can find that.
+**The agent's design contains OptKnock's.** It was seeded with it and could adopt it whole in
+one move, so what is the agent's own is the fourth edit, not the design. Every run states this
+in its verdict when it is true, because "the agent beat OptKnock" and "the agent added one
+edit to OptKnock's answer and the pair beat OptKnock" are not the same claim.
+
+**Read at one growth rate or not at all.** The agent's design makes 9.946 at 0.055 and
+OptKnock's makes 9.911 at 0.091. Quoted that way the agent is 0.4% ahead, and the number means
+nothing: the two designs sit at different points of the same trade-off, and any design can buy
+product by spending growth. Held at one growth rate the difference is real and much larger than
+0.4% — 9.771 against 7.597 — but it is a difference in *coupling*, not in ceiling. The
+knockdown does not raise what the strain can make; it removes the strain's freedom to make
+less. That is the agent's actual contribution on this problem, and the old scoreboard could not
+express it.
+
+**A one-second exhaustive sweep finds the same thing.** The row above the agent's is the same
+proven design plus the best of every `knockdown_50` the agent could have played, tried one at a
+time. It reaches 9.948 in under a second, deterministically, and no judgement enters it
+anywhere. "OptKnock cannot express a knockdown" is true; "finding the right knockdown needs a
+decision model" does not follow, and this row is what tests the difference. Any claim that the
+agent contributes something has to clear this row, not OptKnock.
+
+**A single gene deletion cannot solve this problem at all.** The best of 71 reaches nothing
+once it is re-optimised. Anaerobic succinate needs several routes closed at once, and no
+single-deletion screen — however it is scored — can find that.
 
 **OptKnock is not beaten by an agent searching on its own.** Before the deterministic designer
 was wired into the loop, JEV runs landed between 1.9 and 9.1 and never matched 9.911. The
@@ -452,22 +480,27 @@ switch to once the obvious ones are shut, and a board built from where the flux 
 cannot see them. No amount of play fixes that; it is a blindness in what the agent is shown.
 
 **What the agent adds is a move OptKnock cannot express.** OptKnock's variables are
-present-or-absent: a 50% cap is not a constraint its formulation can write down. Handed its
-own proven design, the agent halved acetate kinase (`ACKr`) on top of it and reached 9.946.
-That is **+0.4%** — a small margin honestly won, on a problem where the deterministic method
-is already close to the ceiling, and bought with growth (0.055 against 0.091, both above the
-floor).
+present-or-absent: a 50% cap is not a constraint its formulation can write down. Handed its own
+proven design, the agent halved acetate kinase (`ACKr`) on top of it and reached 9.946
+guaranteed. What that bought is **coupling, not ceiling**: OptKnock's design at the agent's
+growth rate is free to make anything from 7.60 to 11.55, and the agent's is pinned at 9.946. A
+strain that must make the product is a different proposal from one that may.
 
-**The margin used to be 8.6%, and the vocabulary change is why.** Forcing flux through the
-glyoxylate shunt on top of OptKnock's design reaches 10.761, and that is what earlier runs
-did. Amplification was removed anyway, for the reason in *Why there is no amplification*
-above. The headroom row keeps the consequence visible in every run instead of leaving it as
-an argument.
+**The vocabulary change cost more than the agent gained.** Forcing flux through the glyoxylate
+shunt on top of OptKnock's design reaches 10.761, and that is what earlier runs did.
+Amplification was removed anyway, for the reason in *Why there is no amplification* above. The
+headroom row keeps the consequence visible in every run instead of leaving it as an argument:
+on this example the best amplification the growth floor still allows guarantees 10.031 against
+the agent's 9.946.
 
-**The agent found the optimum of the space it was given.** An exhaustive screen of every
-gene-associated deletion and every 50% knockdown on top of the OptKnock set reaches 9.9461 —
-the same number, via `ACKr` or the equivalent `PTAr`. That is worth more than the margin: it
-says the loop is searching its space properly, not that this space is the best one.
+**The agent very nearly found the optimum of the space it was given, and so does enumeration.**
+Every 50% knockdown on top of the OptKnock set, tried one at a time, reaches 9.9475 through
+`ATPS4r`; `ACKr` and the equivalent `PTAr` reach 9.9459. The agent landed on the latter. Two
+readings follow and both belong in any claim made from this run: the loop is searching its space
+properly, which is worth knowing; and the space is small enough to exhaust in under a second, so
+on this problem the search did not need a decision model. `05_baseline/comparison.csv` carries
+that sweep as its own row in every run, which is why the claim can be checked rather than
+argued.
 
 Four things made the difference, and each was a failure before it was a fix:
 
@@ -520,13 +553,24 @@ In addition to the shared preflight rules in `_preflight.md`:
   00_summary.json        headline result and the best design
   00_manifest.json       authoritative artifact inventory (schema_version 2)
   model/<model-id>.xml   the model that was solved
-  01_wild_type/          reference pFBA fluxes and the starting scoreboard
+  01_wild_type/          reference pFBA fluxes, the wild type's own guarantee, the scoreboard
   02_game/               ticks.csv, rounds.csv, candidate_rankings.csv
   03_design/             best_design.csv, final_design.csv, flux_trajectory.csv
-  04_agent/              transcript.jsonl (every request and response), usage.json
+  04_agent/              transcript.jsonl (every request and response), usage.json,
+                         literature.csv
+  05_baseline/           comparison.csv — every method scored the same way
+  06_targets/            targets.csv and summary.json — the case for and against each target
+  figures/               design_space.png and .pdf — every design on one plane
+  report.html            the whole run on one page, figures embedded
 ```
 
 Units are CMM's throughout: fluxes in mmol gDW⁻¹ h⁻¹, growth in h⁻¹, molar yield in mol/mol.
+
+The bundle carries two hashes of the model and they are not meant to agree.
+`00_provenance.json`'s `model_sha256` is a fingerprint of the model **as solved** — reactions,
+bounds including the run's condition, GPRs and objective — so it changes when the condition
+does. `00_manifest.json`'s checksum for `model/` is the SHA-256 of the archived file's own
+bytes. `provenance["model_sha256_covers"]` says this in the bundle itself.
 
 There is **no publication renderer and no completion gate** for SC-03. `cmm report validate`
 refuses a JEV run rather than measuring it against the production contract it was never meant

@@ -18,11 +18,10 @@ a second copy. Moves print as they are played:
 ```
 R1T8 knockout on D_LACt2 → product 9.381, growth 0.08559
 R1T9 JEV ended the round
-R2T1 knockout on PFL → product 0.6781, growth 0.18
-R2T2 restore_best_design on restore_best_design → product 9.381, growth 0.08559
-R2T3 knockdown_50 on PFL → product 9.423, growth 0.07983
-R3T1 adopt_best_design on adopt_best_design → product 9.911, growth 0.09065
-R3T2 knockdown_50 on ACKr → product 9.946, growth 0.05472
+R2T1 knockout on PFL → product 0.9015, growth 0.1776
+R4T1 adopt_best_design on adopt_best_design → product 9.911, growth 0.09065
+R4T2 knockdown_50 on ACKr → product 9.946, growth 0.05472
+R4T3 JEV ended the round
 ```
 
 Every round starts again from the wild type — round 2 opens on `PFL` at 0.678, not on round
@@ -55,11 +54,17 @@ alternative designs — took the same run to **five** distinct designs with the 
 
 | reaction | genes | measured | for | against |
 |---|---|---|---|---|
-| `ACKr` | purT, ackA, tdcD | halving it +0.035 | in the best design; the cell grows without it | needs 3 genes (isozymes), not one |
+| `ACKr` | purT, ackA, tdcD | halving it 0 | in the best design; the cell grows without it | needs 3 genes (isozymes), not one; CMM measured halving it changing the product by 0 |
 | `SUCCt2_2` | dctA | deleting it −9.9 | — | a single-gene edit, but the same gene runs `FUMt2_2` and `MALt2_2`, which the edit stops too |
 
 They are not scored against each other. "Raises the product by 0.035" and "needs three
 isozymes deleted" are not commensurable, and the trade belongs to whoever builds the strain.
+
+Note what `ACKr` reads here. The tick that applied it recorded `+0.03537`, because that was the
+change against the design standing at that moment; the targets table re-measures every gain
+against the design the run *ended* with, where halving it changes nothing. Both are true of
+different designs, which is why each number says which design it belongs to rather than being
+averaged into one.
 
 ## What it is measured against
 
@@ -67,24 +72,45 @@ Every run scores itself against the deterministic methods on the same problem, e
 applied and solved the same way, and prints the table:
 
 ```
-  wild type                              product    0.0000  growth  0.2117
-  best single gene deletion (MOMA-L2)    product    0.2114  growth  0.1646
-  OptKnock                               product    9.9108  growth  0.0906
-  RobustKnock                            product    9.9108  growth  0.0906
+  wild type                                guaranteed  0.0000  growth  0.2117
+  best single gene deletion                guaranteed  0.0000  growth  0.2076
+  OptKnock                                 guaranteed  9.9098  growth  0.0906
+  RobustKnock                              guaranteed  9.9098  growth  0.0906
+  best deterministic design + one knockdown (exhaustive)
+                                           guaranteed  9.9475  growth  0.0527
   best amplification (outside the vocabulary)
-                                         product   10.0387  growth  0.0532
-  JEV agent                              product    9.9461  growth  0.0547  (not deterministic)
+                                           guaranteed 10.0310  growth  0.0532
+  JEV agent                                guaranteed  9.9457  growth  0.0547  (not deterministic)
 ```
 
-Read it honestly. A single gene deletion cannot solve this problem — the best of 71 reaches
-0.211. OptKnock proves 9.911 in under a second, and an agent searching on its own does not
-match it: the winning design deletes `LDH_D` and `THD2`, which carry no flux in the wild type,
-and a board built from where the flux is today cannot see them. What the agent adds is the
-move OptKnock's formulation cannot express — a **partial** knockdown, its own variables being
-present-or-absent. Halving acetate kinase on top of OptKnock's design takes 9.911 to 9.946,
-at a cost in growth (0.055 against 0.091). That +0.4% is the whole margin, and it is an
-honest one: an exhaustive screen of every deletion and every 50% knockdown on top of that
-design reaches the same 9.9461, so the agent found the best its vocabulary allows.
+Every row is the **guaranteed** product: the least that design can make while growing as fast
+as it can. A pFBA number is the best case, and a design whose worst case is zero is one the
+strain may grow just as fast without ever using.
+
+Read it honestly, in three steps.
+
+*A single gene deletion cannot solve this problem* — the best of 71 reaches nothing once it is
+re-optimised. Anaerobic succinate needs several routes closed at once.
+
+*OptKnock proves 9.910 in under a second*, and an agent searching on its own does not match it:
+the winning design deletes `LDH_D` and `THD2`, which carry no flux in the wild type, and a board
+built from where the flux is today cannot see them. So the run hands the agent that design and
+asks it to improve on it — which means the agent's design **contains** OptKnock's, and the
+verdict says so.
+
+*What the agent adds is coupling, not ceiling.* Halving acetate kinase on top of OptKnock's
+design moves the guarantee from 9.910 to 9.946, and the growth rate from 0.091 to 0.055. Quoted
+as "+0.4% product" that is meaningless — the two designs sit at different points of the same
+trade-off, and any design can buy product by spending growth. Held at one growth rate the real
+difference shows: OptKnock's design is free to make anything from 7.60 to 11.55, and the
+agent's is pinned at 9.946. The knockdown does not raise what the strain can make; it removes
+the strain's freedom to make less.
+
+*And enumeration finds the same thing.* The `+ one knockdown (exhaustive)` row is the same
+proven design plus the best of every `knockdown_50` the agent could have played, tried one at a
+time: 9.9475 through `ATPS4r`, in under a second, with no judgement anywhere in it. The agent
+landed on `ACKr` at 9.9459. Any claim that the decision model contributes something has to
+clear that row, not OptKnock — which is why every run now computes it.
 
 The `best amplification` row is deliberately a move the agent may **not** make. Forcing flux
 through a reaction is not what over-expression does to a cell, so it is excluded from the
@@ -92,8 +118,10 @@ vocabulary — and the row prices that decision in every run rather than leaving
 argument. It is measured on the design being scored, not on the wild type, because on the
 wild type FSEOF's top amplification target for succinate buys nothing at all.
 
-Over eight runs of this configuration: all eight reached 10.761, in six steps and five
-seconds each. That is one problem on one small model, and it is not a claim about yours.
+This is one run, on one problem, on one small model. The agent's choices are not guaranteed to
+repeat — two runs of this configuration have produced designs differing several-fold — so
+nothing here is a claim about the method, let alone about your model. Claiming agent performance
+needs repeated runs and a stated distribution, which this example does not provide.
 
 ## What it costs
 
@@ -168,7 +196,10 @@ mis-read, and a pool that cannot be identified is named on the screen instead of
 `organism` is required as soon as `enable_web_research` is on, and has no default: a
 literature lookup about the wrong species returns an answer that is confident and wrong.
 
-`enable_web_research: true` adds a literature lookup for each candidate through OpenRouter's
-web plugin. What it returns is pasted into that candidate's record as evidence for the agent
-to weigh. It is data, never an instruction: JEV can still only answer with the moves this
-package defines.
+`enable_web_research: true` adds **one** literature lookup, through OpenRouter's web plugin,
+before the first move and never inside a step. What it returns is shown in every state under
+`published_evidence` and kept whole in `04_agent/literature.csv` with its sources. It used to
+be a lookup per candidate reaction, run between the two calls of a step: correct, and unusable
+— a web search takes tens of seconds, the loop waits on it with nothing to do, and eight of
+them turned a run that plays in a minute into one that takes ten. It is data, never an
+instruction: JEV can still only answer with the moves this package defines.
