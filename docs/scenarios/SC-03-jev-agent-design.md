@@ -445,11 +445,11 @@ On the shipped anaerobic succinate example:
 |---|---:|---:|---:|---:|:---:|
 | Wild type | 0.000 | 0.000 | 0.212 | 0.000 | — |
 | Best single gene deletion | 0.000 | 0.000 | 0.208 | 0.000 | yes |
-| **OptKnock**, 3 knockouts | **9.910** | 9.911 | 0.091 | 7.597 | yes |
-| **RobustKnock**, 3 knockouts | **9.910** | 9.911 | 0.091 | 7.597 | yes |
-| **Same design + one knockdown, exhaustive** | **9.948** | 9.948 | 0.053 | 9.948 | yes |
-| **JEV agent**, 3 deletions + 1 knockdown | **9.946** | 9.946 | 0.055 | 9.771 | **no** |
-| *Best amplification on top of that design* | *10.031* | *10.039* | *0.053* | *9.919* | *outside the vocabulary* |
+| **OptKnock**, 3 knockouts | **9.910** | 9.911 | 0.091 | 7.704 | yes |
+| **RobustKnock**, 3 knockouts | **9.910** | 9.911 | 0.091 | 7.704 | yes |
+| **Same design + knockdowns, searched** | **9.946** | 9.946 | 0.055 | 9.946 | yes |
+| **JEV agent**, 3 deletions + 1 knockdown | **9.946** | 9.946 | 0.055 | 9.946 | **no** |
+| *Best amplification on top of that design* | *10.031* | *10.039* | *0.053* | *—* | *outside the vocabulary* |
 
 Read this carefully, because the obvious reading is wrong in several directions.
 
@@ -462,24 +462,28 @@ edit to OptKnock's answer and the pair beat OptKnock" are not the same claim.
 OptKnock's makes 9.911 at 0.091. Quoted that way the agent is 0.4% ahead, and the number means
 nothing: the two designs sit at different points of the same trade-off, and any design can buy
 product by spending growth. Held at one growth rate the difference is real and much larger than
-0.4% — 9.771 against 7.597 — but it is a difference in *coupling*, not in ceiling. The
+0.4% — 9.946 against 7.704 — but it is a difference in *coupling*, not in ceiling. The
 knockdown does not raise what the strain can make; it removes the strain's freedom to make
 less. That is the agent's actual contribution on this problem, and the old scoreboard could not
 express it.
 
-**A one-second search finds the same thing, at whatever depth the agent plays.** The row above
+**A one-second search finds the same design, at every depth the agent may play.** The row above
 the agent's is the same proven design plus the `knockdown_50` moves a plain search finds on top
 of it — exhaustive at one knockdown, greedy past that, as deep as `max_knockdowns` allows the
-agent to go. It reaches 9.948 in about a second, deterministically, and no judgement enters it
-anywhere. "OptKnock cannot express a knockdown" is true; "finding the right knockdown needs a
-decision model" does not follow, and this row is what tests the difference. Any claim that the
-agent contributes something has to clear this row, not OptKnock.
+agent to go. It reaches **the same 9.946 through `ACKr` at depth one, two and three**, in about
+a second, deterministically, with no judgement anywhere in it. "OptKnock cannot express a
+knockdown" is true; "finding the right knockdown needs a decision model" does not follow, and
+this row is what tests the difference. Any claim that the agent contributes something has to
+clear this row, not OptKnock.
 
-The depth matters because it is where the argument for an agent actually lives. At one
-knockdown there is nothing to search: a few dozen candidates, one solve each. The combinations
-only become expensive at two or three, which is exactly where greedy stops being obviously
-optimal — so that is the regime to run if you want to know whether the judgement is worth its
-price. Raise `max_knockdowns` and read the two rows against each other.
+**On this problem the depth-2 region is empty, for everyone.** There are 32 knockdowns the agent
+could play on the OptKnock design. All 496 pairs of them were tried: the best pair returns
+9.945652, the same as the best single, to six decimal places. A second knockdown buys nothing at
+all here — not for the agent, not for greedy, not for exhaustive search. So the mixed
+knockout/knockdown region, which is the one place the agent's vocabulary genuinely exceeds
+OptKnock's, has exactly one move in it on anaerobic succinate, and the agent found it. Testing
+whether judgement pays in that region needs a problem where the region is not a single point;
+raising `max_knockdowns` on this one does not create one.
 
 **Every method is held to `off_limits`, not just the agent.** The agent never sees a forbidden
 reaction; a deterministic row that used one would be winning on a design the person running this
@@ -502,7 +506,7 @@ cannot see them. No amount of play fixes that; it is a blindness in what the age
 present-or-absent: a 50% cap is not a constraint its formulation can write down. Handed its own
 proven design, the agent halved acetate kinase (`ACKr`) on top of it and reached 9.946
 guaranteed. What that bought is **coupling, not ceiling**: OptKnock's design at the agent's
-growth rate is free to make anything from 7.60 to 11.55, and the agent's is pinned at 9.946. A
+growth rate is free to make anything from 7.70 to 11.55, and the agent's is pinned at 9.946. A
 strain that must make the product is a different proposal from one that may.
 
 **The vocabulary change cost more than the agent gained.** Forcing flux through the glyoxylate
@@ -513,13 +517,14 @@ on this example the best amplification the growth floor still allows guarantees 
 the agent's 9.946.
 
 **The agent very nearly found the optimum of the space it was given, and so does enumeration.**
-Every 50% knockdown on top of the OptKnock set, tried one at a time, reaches 9.9475 through
-`ATPS4r`; `ACKr` and the equivalent `PTAr` reach 9.9459. The agent landed on the latter. Two
-readings follow and both belong in any claim made from this run: the loop is searching its space
-properly, which is worth knowing; and the space is small enough to exhaust in under a second, so
-on this problem the search did not need a decision model. `05_baseline/comparison.csv` carries
-that sweep as its own row in every run, which is why the claim can be checked rather than
-argued.
+There are 32 knockdowns the agent could play on the OptKnock set. Tried one at a time they
+reach **9.9457** through `ACKr` (and the equivalent `PTAr`), which is exactly what the agent
+found. Tried in all 496 pairs they reach 9.9457 as well: a second knockdown buys **nothing at
+all**, to six decimal places. Two readings follow and both belong in any claim made from this
+run: the loop found the optimum of its own vocabulary, which is worth knowing; and that space
+is small enough to exhaust in under a second, so on this problem the search did not need a
+decision model. `05_baseline/comparison.csv` carries that sweep as its own row in every run,
+which is why the claim can be checked rather than argued.
 
 Four things made the difference, and each was a failure before it was a fix:
 

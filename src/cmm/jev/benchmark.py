@@ -313,6 +313,9 @@ def compare_with_baselines(
                 base_label=base.method,
                 base_design=base.design,
                 base_bounds=design_bounds[base.method],
+                # The wild type this run started from: a knockdown is half of *that*, for
+                # every method, at every depth.
+                wild_type_fluxes=dict(wild.fluxes),
                 max_knockdowns=max_knockdowns,
                 forbidden=barred,
             )
@@ -382,7 +385,14 @@ def _fill_comparison_columns(
         for row in rows
         if row.status == "optimal" and row.growth == row.growth and row.design
     ]
-    matched_growth = min((row.growth for row in scorable), default=None)
+    # The shared operating point is set by the designs that are actually being compared. The
+    # amplification row is excluded for the same reason the verdict excludes it from the
+    # head-to-head: it plays a move the agent is forbidden, so letting its growth rate decide
+    # where every other design is read would hand the comparison to a method that is not in it.
+    matched_growth = min(
+        (row.growth for row in scorable if row.method != _HEADROOM_LABEL),
+        default=None,
+    )
 
     filled: list[BaselineRow] = []
     for row in rows:
@@ -738,6 +748,7 @@ def _best_single_knockdown(
     biomass: str,
     growth_floor: float,
     standing: Mapping[str, tuple[float, float]],
+    wild_type_fluxes: Mapping[str, float],
     forbidden: Collection[str],
 ) -> tuple[float, str, dict[str, tuple[float, float]], str, int] | None:
     """Try every knockdown the agent could play on ``standing``; keep the best guarantee.
@@ -756,15 +767,19 @@ def _best_single_knockdown(
     with model:
         for reaction_id, (lower, upper) in standing.items():
             model.reactions.get_by_id(reaction_id).bounds = (lower, upper)
-        reference = _solve(model)
         if (
-            reference.status != "optimal"
+            _solve(model).status != "optimal"
         ):  # pragma: no cover - the base row already solved
             return None
-        # "Half of wild type" means half of what the reaction carries in the state the
-        # knockdown is applied to, which here is the design standing at this step — exactly
-        # what the agent's own screen measures against.
-        reference_fluxes = dict(reference.fluxes)
+        # The **round-0 wild-type** fluxes, not the standing design's. This is not a detail:
+        # ``Intervention`` defines a knockdown against the wild type precisely so that "half"
+        # does not drift as a design accumulates edits, and the engine passes
+        # ``board.reference.fluxes`` for every move and every screen. Re-referencing here made
+        # the control play a move the agent cannot. Measured on anaerobic succinate:
+        # re-referenced, ``ATPS4r`` looked like the best knockdown on the OptKnock design at
+        # 9.9475 guaranteed; built as the agent would build it, half of its *wild-type* flux,
+        # it reaches 9.9107 and the real best is ``ACKr`` at 9.9457 — which is what the agent
+        # found. The control was competing on easier terms and beating the agent with it.
         best: tuple[float, str, dict[str, tuple[float, float]], str, int] | None = None
         n_tried = 0
         for reaction in list(model.reactions):
@@ -784,7 +799,7 @@ def _best_single_knockdown(
                     model,
                     reaction.id,
                     ACTION_CATALOGUE["knockdown_50"],
-                    reference_fluxes,
+                    wild_type_fluxes,
                 )
             except (ActionNotApplicable, KeyError):
                 continue
@@ -828,6 +843,7 @@ def _knockdown_sweep_row(
     base_label: str,
     base_design: Sequence[str],
     base_bounds: Mapping[str, tuple[float, float]],
+    wild_type_fluxes: Mapping[str, float],
     max_knockdowns: int = 1,
     forbidden: Collection[str] = (),
 ) -> tuple[BaselineRow, dict[str, tuple[float, float]]]:
@@ -884,6 +900,7 @@ def _knockdown_sweep_row(
             biomass=biomass,
             growth_floor=growth_floor,
             standing=standing,
+            wild_type_fluxes=wild_type_fluxes,
             forbidden=frozenset(forbidden),
         )
         if step is None:
@@ -1255,6 +1272,15 @@ def comparison_summary(
             verdict += (
                 f" {searched} on the same proven design reaches {_rank(sweep):.4g}, which the "
                 f"agent beat by {gap:+.4g} — that margin is what the judgement bought."
+            )
+        elif gap >= -1e-6:
+            # An exact tie is the most informative outcome of the three and formats as "-0"
+            # if it is written as a margin, so it is said in words instead.
+            verdict += (
+                f" {searched} on the same proven design reaches the same "
+                f"{_rank(sweep):.4g} in {sweep.seconds:.3g} s and deterministically, so on "
+                "this problem the agent found the optimum of its own vocabulary and so did a "
+                "search with no judgement in it."
             )
         else:
             verdict += (

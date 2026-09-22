@@ -77,7 +77,7 @@ applied and solved the same way, and prints the table:
   OptKnock                                 guaranteed  9.9098  growth  0.0906
   RobustKnock                              guaranteed  9.9098  growth  0.0906
   best deterministic design + one knockdown (exhaustive)
-                                           guaranteed  9.9475  growth  0.0527
+                                           guaranteed  9.9457  growth  0.0547
   best amplification (outside the vocabulary)
                                            guaranteed 10.0310  growth  0.0532
   JEV agent                                guaranteed  9.9457  growth  0.0547  (not deterministic)
@@ -102,15 +102,17 @@ verdict says so.
 design moves the guarantee from 9.910 to 9.946, and the growth rate from 0.091 to 0.055. Quoted
 as "+0.4% product" that is meaningless — the two designs sit at different points of the same
 trade-off, and any design can buy product by spending growth. Held at one growth rate the real
-difference shows: OptKnock's design is free to make anything from 7.60 to 11.55, and the
+difference shows: OptKnock's design is free to make anything from 7.70 to 11.55, and the
 agent's is pinned at 9.946. The knockdown does not raise what the strain can make; it removes
 the strain's freedom to make less.
 
 *And enumeration finds the same thing.* The `+ one knockdown (exhaustive)` row is the same
 proven design plus the best of every `knockdown_50` the agent could have played, tried one at a
-time: 9.9475 through `ATPS4r`, in under a second, with no judgement anywhere in it. The agent
-landed on `ACKr` at 9.9459. Any claim that the decision model contributes something has to
-clear that row, not OptKnock — which is why every run now computes it.
+time: 32 moves, under a second, no judgement anywhere in it. It lands on `ACKr` at 9.9457 —
+exactly where the agent landed. Going deeper changes nothing: all 496 pairs return the same
+9.9457, so a second knockdown buys nothing on this problem for anyone. The agent found the
+optimum of its own vocabulary, and so did a one-second loop. Any claim that the decision model
+contributes something has to clear that row, not OptKnock — which is why every run computes it.
 
 The `best amplification` row is deliberately a move the agent may **not** make. Forcing flux
 through a reaction is not what over-expression does to a cell, so it is excluded from the

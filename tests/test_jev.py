@@ -3201,8 +3201,8 @@ def test_the_comparison_reads_every_design_at_one_growth_rate(anaerobic_core) ->
     Measured on the shipped succinate example: the agent's four-edit design reaches 9.946 at
     growth 0.0547 while OptKnock reaches 9.911 at 0.0906, which the old verdict reported as a
     0.4% win. Held at one growth rate the two are nothing alike, in the agent's favour — its
-    design guarantees about 9.77 where OptKnock's guarantees about 7.60, because the knockdown
-    buys a guarantee rather than a bigger optimum.
+    design guarantees 9.946 where OptKnock's guarantees 7.704, because the knockdown buys a
+    guarantee rather than a bigger optimum.
     """
 
     pytest.importorskip("straindesign")
@@ -3246,8 +3246,8 @@ def test_the_comparison_reads_every_design_at_one_growth_rate(anaerobic_core) ->
     )
     assert agent.guaranteed_product == pytest.approx(9.9457, abs=1e-3)
     assert optknock.guaranteed_product == pytest.approx(9.9098, abs=1e-3)
-    assert agent.guaranteed_at_matched_growth == pytest.approx(9.771, abs=1e-2)
-    assert optknock.guaranteed_at_matched_growth == pytest.approx(7.597, abs=1e-2)
+    assert agent.guaranteed_at_matched_growth == pytest.approx(9.946, abs=1e-2)
+    assert optknock.guaranteed_at_matched_growth == pytest.approx(7.704, abs=1e-2)
 
     verdict = str(comparison_summary(rows, product="EX_succ_e")["verdict"])
     assert "0.05472" in verdict and "0.09065" in verdict
@@ -3299,9 +3299,14 @@ def test_exhausting_the_vocabulary_is_a_row_the_agent_has_to_beat(
     """The control: the same proven design plus the best knockdown, found by trying them all.
 
     "OptKnock cannot express a knockdown" is true and is not the same claim as "finding the
-    knockdown needs judgement". There are only as many such moves as there are reactions
-    carrying flux, and on ``e_coli_core`` trying every one of them takes under a second and
-    reaches about 9.948 guaranteed — slightly past the 9.946 the shipped agent run reached.
+    knockdown needs judgement". There are only 32 such moves on the OptKnock design here, each
+    costs one solve, and trying every one of them takes under a second.
+
+    It reaches 9.9457 through ``ACKr`` — exactly what the shipped agent run reached. The number
+    is pinned because it is the one that says what the judgement bought on this problem, and
+    because an earlier version of this control re-referenced the knockdown to the standing
+    design instead of the wild type and so appeared to beat the agent, using a cap the agent is
+    not allowed to ask for.
     """
 
     pytest.importorskip("straindesign")
@@ -3320,7 +3325,8 @@ def test_exhausting_the_vocabulary_is_a_row_the_agent_has_to_beat(
     sweep = next(row for row in rows if row.method == _SWEEP_LABEL)
     assert sweep.status == "optimal"
     assert sweep.deterministic
-    assert sweep.guaranteed_product == pytest.approx(9.9475, abs=1e-3)
+    assert sweep.guaranteed_product == pytest.approx(9.9457, abs=1e-3)
+    assert any("ACKr" in entry or "PTAr" in entry for entry in sweep.design)
     assert sweep.contains_design == "OptKnock"
 
 
@@ -3425,6 +3431,12 @@ def test_the_control_searches_as_deep_as_the_agent_may_play(anaerobic_core) -> N
     # Searching deeper cannot do worse: greedy keeps its first move.
     assert deep.guaranteed_product >= shallow.guaranteed_product - 1e-9
     assert len(deep.design) > len(shallow.design)
+    # On this problem it also gains nothing, which is the finding rather than a defect:
+    # an exhaustive sweep of all 496 knockdown pairs on the OptKnock design returns the same
+    # 9.9457 as the best single, so the depth-2 region here is empty for every method.
+    assert deep.guaranteed_product == pytest.approx(
+        shallow.guaranteed_product, abs=1e-4
+    )
 
 
 def test_no_baseline_may_use_what_the_run_put_off_limits(anaerobic_core) -> None:

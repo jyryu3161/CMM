@@ -518,7 +518,7 @@ is an ordinary CMM solve. What is validated is the loop, not the agent:
   design in the table can reach. Without it a design bought by spending growth reads as a better
   method rather than as the same trade-off read at a different point — measured on the shipped
   succinate example, the agent's design is 0.4% ahead of OptKnock's read at their own growth
-  rates and 29% ahead read at one.
+  rates and 29% ahead read at one (9.946 against 7.704).
 - **Every row is scored as the strain that would be built.** The deterministic designers name
   reactions; their rows are resolved through the same GPR layer as the agent's moves, so
   isozymes, complexes and shared genes enter every row identically. The single-gene row is
@@ -531,10 +531,17 @@ is an ordinary CMM solve. What is validated is the loop, not the agent:
   `max_knockdowns`: at depth 1 it is exhaustive and the row says so; past that it is greedy —
   best move, then the best move on top of it — which is the honest name and the right shape,
   because exhaustive search at depth 3 over a board of this size is the cost the agent exists
-  to avoid. On anaerobic succinate it reaches 9.9475 guaranteed in under a second at depth 1,
-  and 9.9487 at depth 3, where the shipped agent run reached 9.9459. That OptKnock's
-  formulation cannot express a knockdown is true; that finding the knockdown needs a decision
-  model does not follow, and this row is what tests the difference.
+  to avoid. The knockdown is defined against the **round-0 wild-type** fluxes, the same
+  reference `Intervention` and the engine's own screen use, so the control plays a move the
+  agent could have played and not a cap it is not allowed to ask for.
+
+  On anaerobic succinate the control reaches 9.9457 through `ACKr` at every depth from one to
+  three, which is exactly what the shipped agent run reached. An exhaustive sweep of all 496
+  knockdown pairs on the same design returns the same 9.9457, so the depth-2 region is empty
+  for every method on this problem. That OptKnock's formulation cannot express a knockdown is
+  true; that finding the knockdown needs a decision model does not follow, and this row is what
+  tests the difference — here it says the agent found the optimum of its own vocabulary, and
+  that a one-second search finds it too.
 - **`off_limits` binds every method, not only the agent.** The agent is refused an off-limits
   reaction before it sees the board, so a deterministic row that used one would be winning on a
   design the person running this said they would not build — two questions in one column. The
