@@ -1,0 +1,12 @@
+{
+  "id": "sc02-disease-to-healthy-mta",
+  "kind": "transformation",
+  "request": "Rank knockouts that move the source expression state toward the target state with published MTA, and validate the run.",
+  "run_dir": "results/example-transformation-mta",
+  "expect": {
+    "validates": true,
+    "provenance_fields": ["direction_transform", "direction_pseudocount", "reference_method", "condition", "cmm", "cobra"],
+    "condition_bounds_include": [],
+    "tables_retain_status": []
+  }
+}

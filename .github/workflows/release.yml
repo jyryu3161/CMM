@@ -84,6 +84,7 @@ jobs:
         run: |
           uvx --from twine==7.0.0 twine check dist/*.whl dist/*.tar.gz
           uv run --no-sync python - <<'PY'
+          import subprocess
           import tarfile
           from pathlib import Path
           from zipfile import ZipFile
@@ -137,6 +138,30 @@ jobs:
               )
               if forbidden_paths:
                   raise SystemExit(f"sdist contains internal review artifacts: {forbidden_paths}")
+              # MANIFEST.in includes docs and examples by pattern, so any stray file a
+              # contributor leaves in those trees ships to users. The denylist above only
+              # catches paths someone thought to name; requiring every shipped file to be
+              # tracked catches the ones nobody predicted.
+              tracked = {
+                  path
+                  for path in subprocess.run(
+                      ["git", "ls-files", "-z"],
+                      capture_output=True, text=True, check=True,
+                  ).stdout.split("\0")
+                  if path
+              }
+              untracked_paths = sorted(
+                  name
+                  for name in relative
+                  if name not in tracked
+                  and not name.startswith("src/cmm.egg-info/")
+                  and name not in {"PKG-INFO", "setup.cfg"}
+              )
+              if untracked_paths:
+                  raise SystemExit(
+                      "sdist contains files that are not tracked by git; commit them or "
+                      f"keep them out of the packaged trees: {untracked_paths}"
+                  )
               # Source distributions must be portable and free of workstation-local paths.
               workstation_path_markers = (b"/users/", b":\\users\\")
               nonportable_hits = []
