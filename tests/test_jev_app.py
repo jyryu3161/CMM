@@ -625,3 +625,62 @@ def test_the_map_is_drawn_at_the_width_it_is_shown_at(window, monkeypatch) -> No
     assert all(5.0 <= w <= 11.0 for w in widths)
     # The move's name is a widget, so it is never drawn into the figure.
     assert "Round 1" in window.jev_map_title.text()
+
+
+def test_the_stop_button_is_clickable_while_there_is_something_to_stop(window) -> None:
+    """The regression this exists to prevent, and it was a real one.
+
+    Stop was parented to the controls group, and the whole group is disabled while a run is in
+    flight. Qt keeps a disabled widget's children disabled whatever you then say about them,
+    so the button was grey for exactly as long as there was anything to stop.
+    """
+
+    window._goto_tab("Agent")
+    assert window.jev_stop_btn.parent() is not window.jev_controls
+    assert not window.jev_stop_btn.isAncestorOf(window.jev_controls)
+    assert not window.jev_controls.isAncestorOf(window.jev_stop_btn), (
+        "Stop must not be a child of the group that gets disabled during a run"
+    )
+
+    # What a run does to the controls, done directly.
+    window.jev_controls.setEnabled(False)
+    window.jev_stop_btn.setEnabled(True)
+    assert window.jev_stop_btn.isEnabled()
+
+    # Save and the key button are in the same position for the same reason.
+    window.jev_save_btn.setEnabled(True)
+    assert window.jev_save_btn.isEnabled()
+    assert window.jev_key_btn.isEnabled()
+
+
+def test_off_limits_reaches_the_run_as_a_rule_not_a_suggestion(
+    window, monkeypatch
+) -> None:
+    """The brief is guidance; this box is enforcement, and the tab has to say which is which."""
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    window._refresh_jev_inputs()
+    window._goto_tab("Agent")
+    window.jev_product_combo.setCurrentText("EX_succ_e")
+    window.jev_rounds_spin.setValue(1)
+    window.jev_ticks_spin.setValue(3)
+    window.jev_off_limits.setText(" PFL , ACKr ")
+
+    seen: list[tuple[str, ...]] = []
+    from cmm.jev import run_jev_design as original
+
+    def capture(config, **kwargs):
+        seen.append(config.off_limits)
+        return original(config, **kwargs)
+
+    monkeypatch.setattr("cmm.jev.run_jev_design", capture)
+    monkeypatch.setattr(
+        "cmm.jev.engine.JevClient",
+        lambda **kwargs: ScriptedClient([("PYK", "knockout"), ("end_round", None)] * 4),
+        raising=True,
+    )
+    window.run_jev_agent()
+
+    assert seen == [("PFL", "ACKr")], "whitespace trimmed, order kept, empties dropped"
+    result = window._jev_result
+    assert all(i.reaction_id not in {"PFL", "ACKr"} for i in result.best_interventions)

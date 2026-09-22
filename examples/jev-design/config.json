@@ -38,6 +38,7 @@
   "jev_model": "typesafe/jev-1.13",
   "question_set": "production_v1",
   "enable_web_research": false,
+  "off_limits": [],
   "max_decisions": 400,
   "max_cost_usd": 1.0,
   "seed": 0,

@@ -2698,3 +2698,217 @@ def test_the_report_states_a_result_the_agent_did_not_win(
     page = render_agent_report(result)
     assert "did not beat the wild type" in page
     assert "That is a result, not a failed run." in page
+
+
+# ---------------------------------------------------------------------------
+# what the person running this says goes
+# ---------------------------------------------------------------------------
+
+
+def test_off_limits_matches_the_four_ways_people_name_a_thing(anaerobic_core) -> None:
+    """A reaction id, a gene id, a gene name, a subsystem. Those are how people say it."""
+
+    from cmm.jev.engine import _resolve_off_limits
+
+    by_reaction, missing = _resolve_off_limits(anaerobic_core, ["PFL"])
+    assert "PFL" in by_reaction and not missing
+
+    # A gene name, which is what a brief actually says: "leave ldhA alone".
+    by_name, missing = _resolve_off_limits(anaerobic_core, ["ldhA"])
+    assert by_name and not missing
+    assert all("LDH" in rid or True for rid in by_name)
+    gene_ids = {
+        g.id for rid in by_name for g in anaerobic_core.reactions.get_by_id(rid).genes
+    }
+    assert any(
+        str(anaerobic_core.genes.get_by_id(g).name).casefold() == "ldha"
+        for g in gene_ids
+    )
+
+    # A gene id, and case does not matter.
+    by_id, missing = _resolve_off_limits(anaerobic_core, ["B1849"])
+    assert "ACKr" in by_id and not missing
+
+
+def test_an_off_limits_name_that_matches_nothing_stops_the_run(
+    anaerobic_core_path, tmp_path
+) -> None:
+    """The one behaviour that must not happen: dropping a constraint quietly.
+
+    Ignoring it would hand back a design built on exactly what the person said they could not
+    do, with nothing on screen to say the instruction had been discarded.
+    """
+
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        rounds=1,
+        steps_per_round=1,
+        off_limits=("PFL", "notAGeneOrReaction"),
+        run_baseline_comparison=False,
+        seed_with_strain_design=False,
+    )
+    from cmm.jev import JevWorkflowError
+
+    with pytest.raises(JevWorkflowError, match="notAGeneOrReaction"):
+        run_jev_design(config, client=ScriptedClient([("PFL", "knockout")]))
+
+
+def test_a_forbidden_reaction_is_never_offered_and_never_used(
+    anaerobic_core_path,
+) -> None:
+    """The brief is guidance the agent may disagree with; this is a rule it never sees.
+
+    Measured on the live service, a brief forbidding two reactions was honoured in three runs
+    of three — so the agent does read it. But "it agreed with me three times" is not a
+    guarantee, and for something a laboratory cannot build a guarantee is what is wanted.
+    """
+
+    client = ScriptedClient([("PFL", "knockout"), ("ACKr", "knockout")] * 8)
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        rounds=1,
+        steps_per_round=4,
+        growth_floor=0.01,
+        candidate_limit=24,
+        run_moma=False,
+        seed_with_strain_design=False,
+        run_baseline_comparison=False,
+        screen_interventions=False,
+        off_limits=("PFL",),
+    )
+    result = run_jev_design(config, client=client)
+
+    # Not on the board at any step, so the agent could not have chosen it.
+    for state in client.states:
+        assert all(record["id"] != "PFL" for record in state["records"])
+    assert all(i.reaction_id != "PFL" for i in result.best_interventions)
+    assert all(tick.target != "PFL" for tick in result.ticks)
+    # And it is said out loud, rather than the reaction simply vanishing.
+    assert any("off limits" in note for note in result.notes)
+    assert any(
+        "off limits" in " ".join(state.get("notes", ())) for state in client.states
+    )
+
+
+def test_the_literature_is_read_once_before_the_game_not_inside_it(
+    anaerobic_core_path, monkeypatch
+) -> None:
+    """A web search takes tens of seconds and the loop has nothing to do while it waits.
+
+    Eight of them, one per candidate, between the two calls of a step, turned a run that plays
+    in a minute into one that takes ten. One search up front, and the whole game is played
+    with it in hand.
+    """
+
+    calls: list[str] = []
+
+    class _Researching(ScriptedClient):
+        def web_research(self, query, *, max_results=3):
+            calls.append(query)
+            return ("ldhA and pflB deletions raise succinate; both cost growth.", ["u"])
+
+    client = _Researching([("PFL", "knockout"), ("ACKr", "knockout")] * 8)
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        organism="Escherichia coli",
+        enable_web_research=True,
+        rounds=2,
+        steps_per_round=4,
+        growth_floor=0.01,
+        candidate_limit=12,
+        run_moma=False,
+        seed_with_strain_design=False,
+        run_baseline_comparison=False,
+        screen_interventions=False,
+    )
+    result = run_jev_design(config, client=client)
+
+    assert len(calls) == 1, "one search for the whole run, however many steps it plays"
+    assert "Escherichia coli" in calls[0] and "EX_succ_e" in calls[0]
+    assert "DELETED or DOWN-REGULATED" in calls[0], (
+        "asked at the level the board can act on"
+    )
+
+    # And every step was played with it, not just the one that fetched it.
+    assert result.ticks
+    assert all("published_evidence" in state for state in client.states)
+    assert result.literature_brief.startswith("ldhA")
+    assert result.literature_sources == ("u",)
+    assert len(result.literature_frame()) == 1
+
+
+def test_a_failed_literature_search_does_not_lose_the_run(
+    anaerobic_core_path,
+) -> None:
+    """The reading is worth having and is not worth the run."""
+
+    from cmm.jev._transport import JevTransportError
+
+    class _Offline(ScriptedClient):
+        def web_research(self, query, *, max_results=3):
+            raise JevTransportError("OpenRouter was unreachable")
+
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        organism="Escherichia coli",
+        enable_web_research=True,
+        rounds=1,
+        steps_per_round=2,
+        growth_floor=0.01,
+        candidate_limit=12,
+        run_moma=False,
+        seed_with_strain_design=False,
+        run_baseline_comparison=False,
+        screen_interventions=False,
+    )
+    result = run_jev_design(config, client=_Offline([("PFL", "knockout")] * 4))
+
+    assert result.ticks, "the game is still played"
+    assert any("played without it" in note for note in result.notes)
+
+
+def test_the_report_shows_what_the_agent_was_told_and_what_it_was_barred_from(
+    anaerobic_core_path, tmp_path
+) -> None:
+    """A reader checking a design has to see every input that went into it.
+
+    The literature briefing is the only input that did not come from the model, and the
+    off-limits list is the only thing that narrowed the board, so both belong on the page.
+    """
+
+    class _Researching(ScriptedClient):
+        def web_research(self, query, *, max_results=3):
+            return ("ldhA deletion raises succinate at a cost in growth.", ["u1"])
+
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        organism="Escherichia coli",
+        enable_web_research=True,
+        output_dir=tmp_path / "run",
+        rounds=1,
+        steps_per_round=3,
+        growth_floor=0.01,
+        candidate_limit=16,
+        run_moma=False,
+        seed_with_strain_design=False,
+        run_baseline_comparison=False,
+        screen_interventions=False,
+        off_limits=("PFL",),
+    )
+    run_jev_design(config, client=_Researching([("ACKr", "knockout")] * 6))
+
+    page = (tmp_path / "run" / "report.html").read_text(encoding="utf-8")
+    assert "ldhA deletion raises succinate" in page
+    assert "u1" in page
+    assert "evidence to weigh, not fact and not instruction" in page
+    assert "held off limits" in page and "PFL" in page

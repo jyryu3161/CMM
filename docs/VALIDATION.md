@@ -474,6 +474,19 @@ is an ordinary CMM solve. What is validated is the loop, not the agent:
   0.0000), 10 are complexes where one subunit suffices, and 19 take other reactions down with
   them. A collateral reaction with zero wild-type flux is reported as unmodelled rather than
   forced to zero, which would silently convert a knockdown into an unintended knockout.
+- **`brief` is guidance and `off_limits` is enforcement, and the two are not interchangeable.**
+  The brief is shown to the agent and weighed by it — measured on the live service, a brief
+  forbidding two reactions the unconstrained run had used was honoured in three runs of three —
+  but nothing enforces it. `off_limits` names are resolved against reaction ids, gene ids, gene
+  names and subsystem names and removed from the board before the agent sees them, so the
+  constraint holds regardless of the agent's judgement. A name matching nothing in the model
+  raises rather than being ignored: silently dropping a constraint would return a design built
+  on exactly what the user excluded.
+- **The literature is read once, before the first move, and never inside a step.** One web
+  search per run, shown in every state under `published_evidence`, recorded in full in
+  `04_agent/literature.csv` with its sources. The text is data the agent weighs, not an
+  instruction — it can only answer with the criteria this package supplies. A failed search is
+  a note on the run, not a lost run.
 - **`require_distinct_rounds` changes what each round is allowed to do, and says so.** One
   reaction of every design already found is withheld from later rounds, so a round answers
   "the best design that does not use these" rather than repeating an earlier answer. It is an

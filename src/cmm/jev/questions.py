@@ -355,29 +355,37 @@ def get_question_set(version: str = DEFAULT_QUESTION_SET) -> QuestionSet:
         ) from None
 
 
-def research_query(candidate: CandidateEvidence, product: str, organism: str) -> str:
-    """The web-research prompt for one candidate.
+def literature_briefing(product: str, organism: str) -> str:
+    """The one web query a run makes, before the game starts.
 
-    Deliberately narrow, and deliberately two-sided. An early version asked only what raises
-    the product, and a source that answers only that question is worse than none: the model
-    already predicts the yield, and what it cannot predict is the fitness cost, the
-    regulatory response or the byproduct that a paper would report. So the prompt asks for
-    the penalty as explicitly as the benefit, and asks for silence to be reported as silence
-    rather than filled in.
+    This used to be a lookup per candidate reaction, run *inside* a step between choosing the
+    target and choosing the move. It was correct and it was unusable: a web search takes tens
+    of seconds, the loop has nothing to do while it waits, and eight of them turned a run that
+    plays in a minute into one that takes ten.
+
+    So the reading happens once, up front, and the whole game is played with it in hand. The
+    question is asked at the level the board can act on — named genes, and what happened to
+    both the titre and the growth rate — because a summary the agent cannot connect to any
+    option it has is a summary that costs time and buys nothing.
+
+    Deliberately two-sided. An early version asked only what raises the product, and a source
+    that answers only that is worse than none: the model already predicts the yield, and what
+    it cannot predict is the fitness cost, the regulatory response or the byproduct a paper
+    would report. Silence is asked for as silence rather than filled in.
     """
 
-    gene_hint = f" (genes {', '.join(candidate.genes)})" if candidate.genes else ""
     return (
-        f"In metabolic engineering of {organism}, what has been published about modifying "
-        f"the reaction {candidate.reaction_id}{gene_hint} \u2014 {candidate.name} \u2014 to "
-        f"increase production of {product}?\n"
-        "Answer these three things separately and briefly:\n"
-        "1. Has knockout, knockdown or overexpression of this step been reported, and what "
-        "happened to the product?\n"
-        "2. What was the cost? State any reported growth defect, fitness burden, reduced "
+        f"In metabolic engineering of {organism}, what has been published about increasing "
+        f"production of {product}?\n"
+        "Answer these four things separately and briefly, in at most 250 words total:\n"
+        "1. Which genes have been DELETED or DOWN-REGULATED to raise it? Name the genes, and "
+        "say what happened to the titre or yield in each case.\n"
+        "2. What did each cost? State any reported growth defect, fitness burden, reduced "
         "biomass yield, or dependence on a supplement or a specific medium.\n"
-        "3. Were there side effects a flux model would not predict \u2014 byproduct "
-        "accumulation, regulatory compensation, protein burden, toxicity?\n"
-        "If a point has no published work behind it, say so for that point rather than "
-        "generalising from a related enzyme or a different organism."
+        "3. What side effects were reported that a flux balance model would not predict — "
+        "byproduct accumulation, regulatory compensation, protein burden, toxicity?\n"
+        "4. Which commonly proposed targets have been reported NOT to work, and why?\n"
+        "Name genes rather than pathways wherever the sources do. If a point has no published "
+        "work behind it, say so for that point rather than generalising from a related enzyme "
+        "or a different organism."
     )

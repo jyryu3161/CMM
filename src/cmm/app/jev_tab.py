@@ -200,24 +200,48 @@ class JevTabMixin:
             "example:\n"
             "- The published targets for succinate in E. coli are ldhA, pflB and ptsG.\n"
             "- Growth has to stay above 0.1 per hour for this strain to be useful.\n"
-            "- NADPH supply is the cofactor I expect to be limiting.\n"
-            "- Leave the pentose phosphate pathway alone; we cannot engineer it here."
+            "- NADPH supply is the cofactor I expect to be limiting."
+        )
+        self.jev_brief.setToolTip(
+            "Guidance, not a rule. The agent is shown this on every step and weighs it, and "
+            "it may still disagree with you — a brief cannot widen or narrow what CMM allows. "
+            "For something you will not build, use the box below, which CMM enforces."
         )
         self.jev_brief.setMaximumHeight(78)
-        form.addRow("Brief for the agent:", self.jev_brief)
+        form.addRow("Brief for the agent (guidance):", self.jev_brief)
+
+        # The other half of what people write into a brief: not "here is what I know" but
+        # "here is what I will not build". That is not a matter of opinion and should not be
+        # left to the agent's judgement, so it is a separate box and CMM enforces it.
+        self.jev_off_limits = QLineEdit()
+        self.jev_off_limits.setPlaceholderText(
+            "e.g.  ldhA, PFL, Pentose Phosphate Pathway   (comma separated)"
+        )
+        self.jev_off_limits.setToolTip(
+            "Genes, reactions or subsystems this run may not touch. They are taken off the "
+            "board before the agent sees them, and no proven design containing one is "
+            "offered, so the constraint holds whatever the agent would have preferred. "
+            "Matches a reaction id, a gene id, a gene name or a subsystem name. A name that "
+            "matches nothing in the model stops the run rather than being ignored."
+        )
+        form.addRow("Off limits (enforced):", self.jev_off_limits)
 
         # A real web search, through OpenRouter, run once per reaction the agent is about to
         # act on: what has been published about editing it for this product, what it cost,
         # and what side effects a flux model cannot predict. The answer is pasted into that
         # reaction's record as data; it cannot widen the move vocabulary.
         web_row = QHBoxLayout()
-        self.jev_web_check = QCheckBox("Look up published evidence on the web")
+        self.jev_web_check = QCheckBox(
+            "Look up published evidence on the web (once, ~30 s)"
+        )
         self.jev_web_check.setToolTip(
-            "Searches the web through OpenRouter for what has been published about editing "
-            "each reaction the agent is about to act on — what happened to the product, what "
-            "it cost in growth, and side effects a flux model cannot predict. About $0.05 a "
-            "lookup, eight lookups at most, and the answer is quoted into the board with its "
-            "sources."
+            "One web search through OpenRouter, before the first move: which genes have been "
+            "deleted or down-regulated to raise this product in this organism, what it cost "
+            "in growth, what side effects were reported, and which popular targets did not "
+            "work. The answer is shown to the agent on every step.\n\n"
+            "It used to be a lookup per candidate reaction, run inside a step — correct, and "
+            "unusable: a search takes tens of seconds and eight of them turned a one-minute "
+            "run into a ten-minute one."
         )
         self.jev_organism = QLineEdit()
         self.jev_organism.setPlaceholderText("Escherichia coli")
@@ -234,19 +258,15 @@ class JevTabMixin:
         web_row.addWidget(self.jev_organism, 1)
         form.addRow("Web research:", web_row)
 
-        # The reason the run button is refusing, where the button is, rather than in a
-        # tooltip nobody hovers over. A disabled button that does not say why reads as a bug.
-        self.jev_hint = QLabel("")
-        self.jev_hint.setWordWrap(True)
-        self.jev_hint.setStyleSheet("color: #a0342a; font-size: 11px;")
-        self.jev_hint.setVisible(False)
-        form.addRow("", self.jev_hint)
+        layout.addWidget(controls)
 
         run_row = QHBoxLayout()
         self.jev_run_btn = QPushButton("Let the agent play")
         self.jev_run_btn.clicked.connect(self.run_jev_agent)
-        # Stop lives outside the controls group, because the whole group is disabled while a
-        # run is in flight and a stop button you cannot press is not a stop button.
+        # These live OUTSIDE the controls group. The group is disabled wholesale while a run
+        # is in flight, and Qt keeps a disabled widget's children disabled whatever you then
+        # say about them — so a Stop button parented to it was grey and unclickable for
+        # exactly as long as there was something to stop.
         self.jev_stop_btn = QPushButton("Stop")
         self.jev_stop_btn.setEnabled(False)
         self.jev_stop_btn.setToolTip(
@@ -277,8 +297,17 @@ class JevTabMixin:
         run_row.addWidget(self.jev_key_btn)
         run_row.addWidget(self.jev_key_label)
         run_row.addStretch(1)
-        form.addRow("", run_row)
-        layout.addWidget(controls)
+        run_bar = QWidget()
+        run_bar.setLayout(run_row)
+        layout.addWidget(run_bar)
+
+        # The reason the run button is refusing, beside the button, rather than in a tooltip
+        # nobody hovers over. A disabled button that does not say why reads as a bug.
+        self.jev_hint = QLabel("")
+        self.jev_hint.setWordWrap(True)
+        self.jev_hint.setStyleSheet("color: #a0342a; font-size: 11px;")
+        self.jev_hint.setVisible(False)
+        layout.addWidget(self.jev_hint)
 
         # Two determinate bars, because a run has two clocks and they answer different
         # questions: how far through the game, and how far through this round. Both maxima
@@ -762,6 +791,11 @@ class JevTabMixin:
             require_distinct_rounds=self.jev_distinct_check.isChecked(),
             enable_web_research=self.jev_web_check.isChecked(),
             organism=self.jev_organism.text().strip(),
+            off_limits=tuple(
+                name.strip()
+                for name in self.jev_off_limits.text().split(",")
+                if name.strip()
+            ),
         )
         bridge = self._jev_bridge
 

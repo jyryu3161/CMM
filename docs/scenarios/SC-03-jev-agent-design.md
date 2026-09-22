@@ -207,6 +207,28 @@ delete all of purT, ackA, tdcD together (isozymes: any one alone does nothing)"*
 *"delete gene dctA — which also stops FUMt2_2, MALt2_2"*. Three isozymes is three times the
 laboratory work of one gene, and the agent cannot weigh that if it is not on the screen.
 
+### The literature is read once, before the game
+
+`enable_web_research` makes **one** web search through OpenRouter before the first move:
+which genes have been deleted or down-regulated to raise this product in this organism, what
+each cost in growth, what side effects were reported that a flux model cannot predict, and
+which popular targets have been reported *not* to work. The answer goes into the state under
+`published_evidence` and is shown on every step.
+
+It used to be a lookup per candidate reaction, run *inside* a step between choosing the target
+and choosing the move. That was correct and unusable: a web search takes tens of seconds, the
+loop waits on it with nothing to do, and eight of them turned a run that plays in a minute into
+one that takes ten.
+
+The question is asked at the level the board can act on — named genes, and what happened to
+both the titre and the growth rate — because a summary the agent cannot connect to any option
+it has costs time and buys nothing. The text is **data, never an instruction**: the agent still
+answers only with the criteria this package supplies, so a source telling it to do something is
+naming a move that does not exist. A failed search is a note, not a lost run.
+
+`organism` is required when this is on, and has no default: the published record answered about
+the wrong species is confident and wrong.
+
 ### Why there is no amplification
 
 The vocabulary used to include `amplify_2x`, `amplify_5x` and a `force_on` move that switched
@@ -300,7 +322,30 @@ diagnosis, carried into every later round's state and written to `02_game/rounds
   reach by another route: a deletion refused on the growth floor here can be affordable on a
   design that spends its growth differently.
 
-### Making the rounds actually differ
+### The brief is guidance. `off_limits` is a rule.
+
+Two different things get written into a brief and only one of them is an opinion.
+
+**`brief`** is what the person running this knows and the model does not — published targets,
+a cofactor they expect to be limiting, a growth rate the strain has to hold. It is shown under
+`your_brief` on every step and the agent weighs it. Measured on the live service: a brief
+forbidding `PYK` and `RPE`, both of which the unconstrained run had used, was honoured in
+three runs of three, and the agent found a *better* design without them (9.946 against 9.423).
+So it is read and acted on. But nothing enforces it — it cannot widen or narrow what CMM
+allows, and "the agent agreed with me three times" is not a guarantee.
+
+**`off_limits`** is the guarantee. Genes, reactions or subsystems named here are taken off the
+board before the agent sees them, and no proven design containing one is offered, so the
+constraint holds whatever the agent would have preferred. A name is matched against reaction
+ids, gene ids, gene names and subsystem names, case-insensitively — because those are the four
+ways people say it: *"don't touch PFL"*, *"leave ldhA alone"*, *"the pentose phosphate pathway
+is off the table"*.
+
+**A name that matches nothing stops the run.** Quietly dropping it is the one behaviour that
+must not happen here: it would hand back a design built on exactly what the person said they
+could not do, with nothing on screen to say the instruction had been discarded.
+
+## Making the rounds actually differ
 
 Rounds are told what earlier rounds **found**, as distinct designs, and a round that
 reassembles one is labelled as having done so. That labelling was measured and was not enough:

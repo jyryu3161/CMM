@@ -178,9 +178,11 @@ def export_run(result: JevResult, *, model: Model, reference: FluxState) -> JevR
         stage="04_agent",
         role="literature_evidence",
         method="openrouter_web_plugin",
-        status="complete" if result.literature else "skipped",
+        status="complete" if result.literature_brief else "skipped",
         reason=(
-            None if result.literature else "web research was not enabled for this run"
+            None
+            if result.literature_brief
+            else "web research was not enabled for this run"
         ),
     )
     writer.json(

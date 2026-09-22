@@ -50,7 +50,7 @@ then be comparing everything against instead of the organism.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 import json
 import math
 from pathlib import Path
@@ -87,7 +87,7 @@ from cmm.jev.questions import (
     TARGET_KEY,
     available_actions,
     get_question_set,
-    research_query,
+    literature_briefing,
 )
 
 if TYPE_CHECKING:  # the benchmark imports this module, so the type is compile-time only
@@ -256,10 +256,12 @@ class JevConfig:
     question_set: str = DEFAULT_QUESTION_SET
     enable_web_research: bool = False
     research_model: str = "openai/gpt-5.6-luna"
-    #: A web lookup costs roughly $0.05 — about three hundred times a JEV decision, because
-    #: the search results themselves are billed as input. Eight is a few dollars at most and
-    #: still enough to cover the candidates that matter.
-    max_research_calls: int = 8
+    #: Genes, reactions or subsystems the run may not touch, whatever the agent thinks. The
+    #: brief is *guidance* — the agent reads it and may still disagree with it — and this is
+    #: *enforcement*: anything named here is taken off the board before the agent sees it, and
+    #: no proven design containing it is offered. Matches a reaction id, a gene id, a gene
+    #: name, or a subsystem name, case-insensitively.
+    off_limits: tuple[str, ...] = ()
     max_decisions: int = 2000
     max_cost_usd: float = 5.0
     request_timeout_s: float = 60.0
@@ -299,8 +301,7 @@ class JevConfig:
             raise ValueError("max_decisions must be at least 1")
         if self.max_cost_usd <= 0:
             raise ValueError("max_cost_usd must be positive")
-        if self.max_research_calls < 0:
-            raise ValueError("max_research_calls must be non-negative")
+
         if self.enable_web_research and not self.organism.strip():
             raise ValueError(
                 "enable_web_research needs organism: a literature lookup asks about a named "
@@ -357,6 +358,19 @@ class JevConfig:
                 "budgeted separately. Replace it with max_knockouts and max_knockdowns, "
                 "which say what a laboratory would actually have to build."
             )
+        if "max_research_calls" in values:
+            raise ValueError(
+                "max_research_calls is no longer a setting: the run reads the literature "
+                "once before the first move rather than once per candidate, because a web "
+                "search inside a step made the loop wait tens of seconds for it"
+            )
+        raw_limits = values.get("off_limits")
+        if isinstance(raw_limits, (list, tuple)):
+            values["off_limits"] = tuple(str(name) for name in raw_limits)
+        elif isinstance(raw_limits, str):
+            # A single name, written as a string rather than a one-element list. Accepting it
+            # beats failing on the shape of a constraint that is otherwise perfectly clear.
+            values["off_limits"] = (raw_limits,)
         if "screen_amplifications" in values:
             raise ValueError(
                 "screen_amplifications is no longer a setting: the agent cannot amplify. "
@@ -397,6 +411,7 @@ class JevConfig:
             "question_set": self.question_set,
             "enable_web_research": self.enable_web_research,
             "research_model": self.research_model if self.enable_web_research else None,
+            "off_limits": list(self.off_limits),
             "max_decisions": self.max_decisions,
             "max_cost_usd": self.max_cost_usd,
             "seed": self.seed,
@@ -568,9 +583,10 @@ class JevResult:
     flux_frames: tuple[Mapping[str, float], ...] = ()
     transcript: tuple[Mapping[str, object], ...] = ()
     baselines: tuple["BaselineRow", ...] = ()
-    #: reaction id -> (full literature answer, citation urls). The board carries only an
-    #: excerpt; this is the whole thing, so a reader can check what the agent was told.
-    literature: Mapping[str, tuple[str, tuple[str, ...]]] = field(default_factory=dict)
+    #: What the one web search returned, in full, and where it came from. The agent was shown
+    #: this on every step, so a reader checking a design needs to be able to read it too.
+    literature_brief: str = ""
+    literature_sources: tuple[str, ...] = ()
     #: The last evidence the board held for every reaction the run measured, which is what
     #: :func:`~cmm.jev.targets.build_target_reports` reads to state each target's case.
     candidates_seen: tuple[CandidateEvidence, ...] = ()
@@ -626,19 +642,24 @@ class JevResult:
         return comparison_frame(self.baselines)
 
     def literature_frame(self) -> pd.DataFrame:
-        """What the web lookup returned, in full, with its sources."""
+        """What the web search returned, in full, with its sources."""
 
-        return pd.DataFrame(
+        rows = (
             [
                 {
-                    "reaction_id": reaction_id,
-                    "evidence": text,
-                    "n_sources": len(urls),
-                    "sources": "; ".join(urls),
+                    "product": self.config.product,
+                    "organism": self.config.organism,
+                    "briefing": self.literature_brief,
+                    "n_sources": len(self.literature_sources),
+                    "sources": "; ".join(self.literature_sources),
                 }
-                for reaction_id, (text, urls) in sorted(self.literature.items())
-            ],
-            columns=["reaction_id", "evidence", "n_sources", "sources"],
+            ]
+            if self.literature_brief
+            else []
+        )
+        return pd.DataFrame(
+            rows,
+            columns=["product", "organism", "briefing", "n_sources", "sources"],
         )
 
     def targets(self):
@@ -685,7 +706,6 @@ class _Board:
     history: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     scans: ScanCache = field(default_factory=ScanCache)
-    research_calls: int = 0
     #: reaction id -> the moves already tried on it that did not stick. A move is recorded
     #: here the moment it is reverted, and is never offered on that reaction again. Without
     #: this the agent re-proposed an identical rejected move every tick, because the state it
@@ -709,6 +729,9 @@ class _Board:
     #: invisibly: a reaction that vanishes from the board with no explanation is a reaction the
     #: agent will waste steps looking for.
     round_bans: dict[str, str] = field(default_factory=dict)
+    #: Reactions the run definition put off limits. Unlike ``round_bans`` these never lift:
+    #: the person running this said not to touch them, and that is not the agent's call.
+    forbidden: frozenset[str] = frozenset()
     #: The best design the run has seen, and what it scored, so ``restore_best_design`` has
     #: somewhere to go back to.
     best_snapshot: tuple[Intervention, ...] = ()
@@ -940,7 +963,21 @@ def run_jev_design(
             )
         )
 
+    forbidden, unmatched = _resolve_off_limits(model, config.off_limits)
+    if unmatched:
+        raise JevWorkflowError(
+            "these off-limits names match nothing in this model, so the constraint would "
+            f"be silently ignored: {', '.join(sorted(unmatched))}. They are matched against "
+            "reaction ids, gene ids, gene names and subsystem names."
+        )
+    if forbidden:
+        notes.append(
+            f"{len(forbidden)} reaction(s) were held off limits by the run definition and "
+            f"never offered to the agent: {', '.join(sorted(forbidden))}"
+        )
+
     board = _Board(model=model, reference=reference, product=product, biomass=biomass)
+    board.forbidden = forbidden
 
     if config.seed_with_strain_design:
         # Before the first move: hand the agent what the deterministic designer already knows.
@@ -949,6 +986,32 @@ def run_jev_design(
         seeded = _run_scan(board, "strain_design_scan", (), config)
         board.scans.completed.add("strain_design_scan")
         notes.append(f"strain design seeded the board before the first move: {seeded}")
+
+    # One web search, before the game, and none inside it. It used to be a lookup per
+    # candidate reaction run between the two calls of a step: correct, and unusable — a web
+    # search takes tens of seconds, the loop waits on it with nothing to do, and eight of them
+    # turned a run that plays in a minute into one that takes ten. Read once, play with it in
+    # hand.
+    literature_brief = ""
+    literature_sources: tuple[str, ...] = ()
+    if config.enable_web_research:
+        try:
+            literature_brief, urls = agent.web_research(
+                literature_briefing(config.product, config.organism)
+            )
+            literature_sources = tuple(urls)
+        except JevTransportError as error:
+            notes.append(
+                f"the literature briefing could not be fetched, so the run played without "
+                f"it: {error}"
+            )
+        else:
+            notes.append(
+                f"a literature briefing on {config.product} in {config.organism} was read "
+                f"once before the first move, from {len(literature_sources)} source(s), and "
+                "shown to the agent on every step. It is data the agent weighs, not an "
+                "instruction: it cannot name a move outside this package's vocabulary."
+            )
 
     question_set = get_question_set(config.question_set)
     ticks: list[TickRecord] = []
@@ -1033,6 +1096,7 @@ def run_jev_design(
                         *(i.reaction_id for i in board.interventions),
                         *exhausted,
                         *board.round_bans,
+                        *board.forbidden,
                     ],
                     pinned=board.scans.design_notes,
                     limit=config.candidate_limit,
@@ -1086,6 +1150,8 @@ def run_jev_design(
                 previous_rounds=tuple(board.round_log),
                 designs_found=tuple(board.designs_found),
                 brief=config.brief,
+                literature_brief=literature_brief,
+                literature_sources=literature_sources,
                 candidates=candidates,
                 active_interventions=board.active_labels(),
                 ruled_out=tuple(
@@ -1096,6 +1162,17 @@ def run_jev_design(
                 history=tuple(board.history),
                 notes=tuple(
                     [
+                        *(
+                            [
+                                "The run definition puts these off limits and they are not "
+                                "on the board at all: "
+                                + ", ".join(sorted(board.forbidden))
+                                + ". That is the person running this telling you what they "
+                                "will not build, and it is not open to argument."
+                            ]
+                            if board.forbidden
+                            else []
+                        ),
                         *(
                             [
                                 "This round may not use "
@@ -1350,7 +1427,8 @@ def run_jev_design(
         flux_frames=tuple(flux_frames),
         transcript=tuple(transcript),
         baselines=baselines,
-        literature=dict(board.scans.literature),
+        literature_brief=literature_brief,
+        literature_sources=literature_sources,
         candidates_seen=tuple(board.scans.apply(tuple(board.candidates_seen.values()))),
         notes=tuple([*notes, *board.notes]),
         usage=agent.usage.to_dict(),
@@ -1403,6 +1481,7 @@ def _play_tick(
             # A proven design that reaches through a withheld reaction would walk straight
             # back into the design the cut exists to move away from.
             and not set(design[1]) & set(board.round_bans)
+            and not set(design[1]) & board.forbidden
         ),
         None,
     )
@@ -1536,25 +1615,6 @@ def _play_tick(
             product_flux=state.product_flux,
             growth=state.growth,
         )
-
-    # -- optional literature lookup, before the action is chosen -------------
-    if (
-        config.enable_web_research
-        and board.research_calls < config.max_research_calls
-        and candidate.reaction_id not in board.scans.literature
-    ):
-        board.research_calls += 1
-        try:
-            text, urls = agent.web_research(
-                research_query(candidate, board.product, config.organism)
-            )
-        except JevTransportError as error:
-            board.notes.append(
-                f"web research for {candidate.reaction_id} failed: {error}"
-            )
-        else:
-            board.scans.literature[candidate.reaction_id] = (text, tuple(urls))
-            candidate = replace(candidate, literature=text, citations=tuple(urls))
 
     # -- stage two ----------------------------------------------------------
     # Moves already ruled out on this reaction, plus every model-wide scan already run
@@ -1949,6 +2009,52 @@ def _ban_one_member(board: _Board, config: JevConfig, round_index: int) -> None:
         "next round answer a different question \u2014 what is the best design without it? "
         "\u2014 which is the question a laboratory that cannot edit it needs answered"
     )
+
+
+def _resolve_off_limits(
+    model: Model, names: Sequence[str]
+) -> tuple[frozenset[str], set[str]]:
+    """Turn what a person wrote into the reactions CMM will refuse to touch.
+
+    A name may be a reaction id, a gene id, a gene name or a subsystem, because those are the
+    four ways people describe the thing they will not build: "don't touch ``PFL``", "leave
+    *ldhA* alone", "the pentose phosphate pathway is off the table". Matching is
+    case-insensitive; nothing else is inferred.
+
+    A name matching nothing comes back in the second set, and the caller fails the run on it.
+    Silently ignoring a constraint is the one behaviour that must not happen here: the person
+    would get a design built on exactly what they said they could not do, with nothing on
+    screen to say the instruction was dropped.
+    """
+
+    # Keyed by the folded name, valued by what the person actually typed: an error that
+    # reports "notageneorreaction" back at someone who wrote "notAGeneOrReaction" is an error
+    # they have to squint at to find in their own input.
+    wanted = {
+        name.strip().casefold(): name.strip() for name in names if name and name.strip()
+    }
+    if not wanted:
+        return frozenset(), set()
+
+    matched: set[str] = set()
+    seen: set[str] = set()
+    for reaction in model.reactions:
+        keys = {str(reaction.id).casefold()}
+        subsystem = str(getattr(reaction, "subsystem", "") or "").strip().casefold()
+        if subsystem:
+            keys.add(subsystem)
+        for gene in reaction.genes:
+            keys.add(str(gene.id).casefold())
+            name = str(getattr(gene, "name", "") or "").strip().casefold()
+            if name:
+                keys.add(name)
+        hit = keys & set(wanted)
+        if hit:
+            matched.add(str(reaction.id))
+            seen |= hit
+    return frozenset(matched), {
+        original for folded, original in wanted.items() if folded not in seen
+    }
 
 
 def _design_signature(interventions: Sequence[Intervention]) -> tuple[str, ...]:

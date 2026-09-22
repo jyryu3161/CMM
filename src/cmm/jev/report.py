@@ -72,6 +72,34 @@ code { background: #eef1f5; padding: 1px 5px; border-radius: 3px; font-size: 12.
 """
 
 
+def _literature_section(result) -> str:
+    """What the agent was told the literature says, if anything, and where it came from.
+
+    Shown because it was shown to the agent: a reader checking a design has to be able to see
+    every input that went into it, and this one is the only input that did not come from the
+    model. It is labelled as evidence to weigh rather than as fact, in the same words the
+    agent saw.
+    """
+
+    brief = str(getattr(result, "literature_brief", "") or "").strip()
+    if not brief:
+        return ""
+    sources = tuple(getattr(result, "literature_sources", ()) or ())
+    cited = (
+        "<p>Sources: "
+        + ", ".join(f'<a href="{_escape(url)}">{_escape(url)}</a>' for url in sources)
+        + "</p>"
+        if sources
+        else "<p class='empty'>the search returned no citable sources</p>"
+    )
+    return f"""<h2>What the published record was said to show</h2>
+<p>One web search, read before the first move and shown to the agent on every step. It is
+<b>evidence to weigh, not fact and not instruction</b>: where it disagrees with a measured
+line, the measurement is about this model and the paper is about a different strain.</p>
+<div class="caveat">{_escape(brief)}</div>
+{cited}"""
+
+
 def render_agent_report(result) -> str:
     """The whole run as one HTML page: design, rounds, targets, baselines, provenance."""
 
@@ -202,6 +230,8 @@ comparable to each other.</p>
 between them belongs to whoever is building the strain.</div>
 {targets}
 
+{_literature_section(result)}
+
 <h2>Measured against the deterministic methods</h2>
 <p>Same model, same condition, same growth floor, every design applied and solved the same
 way.</p>
@@ -210,10 +240,20 @@ way.</p>
 
 <h2>What the run cost</h2>
 <p>{usage.get("calls", 0)} decision(s), {usage.get("input_tokens", 0)} input and
-{usage.get("output_tokens", 0)} output tokens, ${float(usage.get("cost_usd", 0.0)):.4f}.</p>
+{usage.get("output_tokens", 0)} output tokens, ${
+        float(usage.get("cost_usd", 0.0)):.4f}.</p>
 
 <h2>Notes from the run</h2>
 {_lines(summary["notes"])}
+
+<h2>What the run was not allowed to do</h2>
+<p>{
+        "Nothing was put off limits."
+        if not config.off_limits
+        else "These were held off limits by the run definition and never put on the board: "
+        + _escape(", ".join(config.off_limits))
+        + ". The brief, separately, is guidance the agent weighs rather than a rule it is held to."
+    }</p>
 
 <h2>Provenance</h2>
 {provenance}
