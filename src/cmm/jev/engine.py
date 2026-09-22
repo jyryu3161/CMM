@@ -590,6 +590,11 @@ class JevResult:
     #: The last evidence the board held for every reaction the run measured, which is what
     #: :func:`~cmm.jev.targets.build_target_reports` reads to state each target's case.
     candidates_seen: tuple[CandidateEvidence, ...] = ()
+    #: The growth-versus-product envelope of the unmodified model, as
+    #: ``(product flux, growth min, growth max)``. Measured once at the end of the run rather
+    #: than at report time, because a figure that recomputes its own backdrop can disagree
+    #: with the numbers it is plotting.
+    envelope: tuple[tuple[float, float, float], ...] = ()
     notes: tuple[str, ...] = ()
     usage: Mapping[str, object] = field(default_factory=dict)
     run_directory: Path | None = None
@@ -1412,6 +1417,29 @@ def run_jev_design(
         except Exception as error:  # a comparison that fails must not lose the run
             notes.append(f"the baseline comparison could not run: {error}")
 
+    # The plane every design is placed on, measured on the model as loaded. It bounds what
+    # any design whatsoever could reach, which is what makes a design's own numbers mean
+    # something; without it "9.95 at growth 0.055" is a pair of numbers with nothing to be
+    # measured against. Cheap — one LP per point — and computed here rather than in the figure
+    # so the picture and the tables cannot disagree.
+    envelope: tuple[tuple[float, float, float], ...] = ()
+    try:
+        from cmm.features.production import production_envelope
+
+        measured = production_envelope(model, product, objective=biomass, points=24)
+        envelope = tuple(
+            (
+                float(point.product_flux),
+                float(point.growth_min),
+                float(point.growth_max),
+            )
+            for point in measured.points
+        )
+    except Exception as error:  # a backdrop that cannot be drawn must not lose the run
+        notes.append(
+            f"the growth-versus-product envelope could not be computed: {error}"
+        )
+
     result = JevResult(
         config=config,
         provenance=provenance,
@@ -1429,6 +1457,7 @@ def run_jev_design(
         baselines=baselines,
         literature_brief=literature_brief,
         literature_sources=literature_sources,
+        envelope=envelope,
         candidates_seen=tuple(board.scans.apply(tuple(board.candidates_seen.values()))),
         notes=tuple([*notes, *board.notes]),
         usage=agent.usage.to_dict(),

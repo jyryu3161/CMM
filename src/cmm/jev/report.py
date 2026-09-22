@@ -22,7 +22,9 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from datetime import datetime, timezone
+import base64
 import html
+import io
 
 
 def _escape(value: object) -> str:
@@ -70,6 +72,36 @@ code { background: #eef1f5; padding: 1px 5px; border-radius: 3px; font-size: 12.
 .foot { color: #7b8794; font-size: 12.5px; margin-top: 44px;
         border-top: 1px solid #dde3ea; padding-top: 14px; }
 """
+
+
+def _design_space_figure(result) -> str:
+    """The growth-versus-product plane, embedded rather than linked.
+
+    A base64 PNG rather than an ``<img src="figures/...">`` because the page's whole point is
+    that it travels alone: a report that loses its figure the moment someone forwards the file
+    misleads exactly when it is being shared.
+
+    A figure that cannot be drawn is left out, not faked. The tables below it already carry
+    every number the picture would have shown.
+    """
+
+    try:
+        from cmm.visualization import jev_design_space_figure
+
+        figure = jev_design_space_figure(result)
+        buffer = io.BytesIO()
+        figure.savefig(buffer, format="png", dpi=150, facecolor="white")
+    except Exception:  # pragma: no cover - the tables carry the same numbers
+        return ""
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"""<h2>What each design costs in growth</h2>
+<p>One point per round's design, on the plane the question is actually asked on. The shaded
+band is the feasible envelope \u2014 the projection of the flux cone onto growth and product,
+so it bounds what <em>any</em> design could reach. A point near its edge has little left to
+win; a point well inside it has. The dashed line is the growth floor: everything to the left
+of it was refused by CMM whatever the agent predicted.</p>
+<img src="data:image/png;base64,{encoded}" alt="growth against product flux for every design
+this run produced, against the feasible envelope" style="width:100%;max-width:820px">"""
 
 
 def _literature_section(result) -> str:
@@ -212,6 +244,8 @@ def render_agent_report(result) -> str:
 <p>Each line is a gene edit. Deleting or weakening a gene stops or slows every reaction that
 gene alone carries, and where that is more than the reaction named, the line says so.</p>
 {_lines(summary["best_design"] or ["no interventions survived the rules"])}
+
+{_design_space_figure(result)}
 
 <h2>Rounds — {distinct} distinct design(s) over {len(result.rounds)}</h2>
 <p>Every round starts again from the wild type. One reaction of each design already found is

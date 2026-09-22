@@ -71,7 +71,7 @@ applied and solved the same way, and prints the table:
   best single gene deletion (MOMA-L2)    product    0.2114  growth  0.1646
   OptKnock                               product    9.9108  growth  0.0906
   RobustKnock                            product    9.9108  growth  0.0906
-  best amplification on top of this design (outside the vocabulary)
+  best amplification (outside the vocabulary)
                                          product   10.0387  growth  0.0532
   JEV agent                              product    9.9461  growth  0.0547  (not deterministic)
 ```

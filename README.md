@@ -111,8 +111,8 @@ over-expression does: it tells the solver the cell *must* carry that flux, by wh
 is cheapest, while stronger expression only raises a capacity the cell may decline to use.
 Deletions and knockdowns are caps — they say what the cell cannot do, which is what deleting
 a gene or weakening its promoter achieves. The restriction costs product, and every run
-prices it with a `best amplification on top of this design` row rather than leaving it as an
-argument.
+prices it with a `best amplification (outside the vocabulary)` row, measured on the design
+being scored, rather than leaving it as an argument.
 
 The screen carries two things no deterministic method reports: the **guaranteed product** —
 the worst the design gives while growing as fast as it can, so a pFBA number the strain need
@@ -149,7 +149,9 @@ top of OptKnock's design reaches the same 9.9461, so the agent found the best it
 allows.
 
 Every run writes `report.html` beside its tables: the whole run on one self-contained page,
-readable without CMM installed. In the desktop tab the bottom-right panel has three tabs —
+readable without CMM installed, with every round's design plotted on the growth-versus-product
+plane against the feasible envelope — so *what does this cost me in growth, and is there a
+cheaper one?* is a question answered by looking. In the desktop tab the bottom-right panel has three tabs —
 the moves as they are played, the rounds with what each one was allowed to use and what it
 built, and every target with the case for and against — and **Save full report…** copies the
 lot wherever you want it.

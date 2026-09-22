@@ -305,8 +305,10 @@ def _run_report(args: argparse.Namespace) -> int:
         # gate of its own. Falling through would validate it against the production contract
         # and report a long list of artifacts it was never meant to contain.
         print(
-            "this is a JEV agent run; it has no publication renderer or completion gate. "
-            "Its results are in 02_game/ticks.csv, 03_design/best_design.csv and "
+            "this is an agent run; it has no publication renderer or completion gate. "
+            "Read report.html for the whole run on one page; the tables behind it are in "
+            "02_game/, 03_design/, 05_baseline/ and 06_targets/, the design-space figure "
+            "is in figures/, and every request and response is in "
             "04_agent/transcript.jsonl.",
             file=sys.stderr,
         )

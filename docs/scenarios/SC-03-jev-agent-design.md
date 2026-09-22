@@ -245,7 +245,7 @@ the cell **cannot** do, which is what deleting a gene or weakening its promoter 
 
 The restriction costs product, and every run prices it rather than arguing about it. The
 baseline table carries a
-`best amplification on top of this design (outside the vocabulary)` row: FSEOF is ranked on
+`best amplification (outside the vocabulary)` row: FSEOF is ranked on
 the design being scored, its top ten targets are forced one at a time, and the best one that
 still clears the growth floor is reported. The verdict excludes that row from "best
 deterministic method" — scoring the agent against a move it was forbidden to play is not a
@@ -384,6 +384,17 @@ strain. Every line is read back from a measurement the run already made; nothing
 at report time, because an opinion in a results table is indistinguishable from a measurement.
 
 ## Reading a result
+
+`figures/design_space.png` places every design the run produced on the growth-versus-product
+plane, with the **feasible envelope** behind them — the projection of the flux cone onto those
+two axes (Burgard 2003), so it bounds what any design whatsoever could reach. A point near its
+edge has little left to win; a point well inside it has. The deterministic methods are on the
+same axes as squares, so comparing the agent to OptKnock is something a reader does by looking
+rather than by holding two tables side by side, and the growth floor is drawn as the line it
+is: everything to the left of it was refused by CMM whatever the agent predicted.
+
+The envelope is measured by the *run*, not by the figure, and stored in the result. A picture
+that recomputes its own backdrop can disagree with the numbers it is plotting.
 
 Every run bundle carries **`report.html`**: the whole run on one self-contained page — design
 named by genes, the rounds and what each was allowed to use, every target for and against, the

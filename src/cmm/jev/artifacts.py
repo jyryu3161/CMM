@@ -17,6 +17,7 @@ from pathlib import Path
 import shutil
 
 import pandas as pd
+
 from cobra import Model
 
 from cmm.core.flux_state import FluxState
@@ -251,6 +252,34 @@ def export_run(result: JevResult, *, model: Model, reference: FluxState) -> JevR
         stage="root",
         role="provenance",
     )
+    # -- figures -------------------------------------------------------------
+    # Every design the run produced, on the plane a reader actually asks about: what does it
+    # cost me in growth, and is there a cheaper one?
+    from cmm.visualization import jev_design_space_figure
+    from cmm.visualization.figures import save_figure
+
+    try:
+        figure = jev_design_space_figure(result)
+    except Exception as error:  # pragma: no cover - a figure must not lose a run
+        result = replace(
+            result,
+            notes=(
+                *result.notes,
+                f"the design-space figure could not be drawn: {error}",
+            ),
+        )
+    else:
+        for suffix, media in (("png", "image/png"), ("pdf", "application/pdf")):
+            path = writer.root / "figures" / f"design_space.{suffix}"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            save_figure(figure, path)
+            writer.existing(
+                f"figures/design_space.{suffix}",
+                stage="figures",
+                role=f"design_space_figure_{suffix}",
+                media_type=media,
+            )
+
     writer.json("00_summary.json", result.summary(), stage="root", role="summary")
 
     # One file a reader can open. The bundle is the record; this is the reading copy, and it

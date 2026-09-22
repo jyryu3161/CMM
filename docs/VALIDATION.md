@@ -448,7 +448,7 @@ is an ordinary CMM solve. What is validated is the loop, not the agent:
   raising an enzyme's expression does; an in-silico gain obtained that way overstates what a
   strain would do. Asserted by `test_nothing_in_the_vocabulary_can_force_flux_up`.
 - **The cost of that restriction is measured, not assumed.** Every comparison carries a
-  `best amplification on top of this design` row: FSEOF ranked on the design being scored, its
+  `best amplification (outside the vocabulary)` row: FSEOF ranked on the design being scored, its
   top ten targets forced one at a time, the best one clearing the growth floor reported. It is
   excluded from the "best deterministic method" the agent is scored against, because scoring
   an agent against a move it was forbidden to play is not a comparison. The forced level uses

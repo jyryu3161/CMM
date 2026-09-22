@@ -35,7 +35,7 @@ from cmm.jev.actions import Intervention
 
 #: One label, used by every branch of the FSEOF row so the comparison table cannot end up
 #: with two spellings of the same method depending on whether it succeeded.
-_HEADROOM_LABEL = "best amplification on top of this design (outside the vocabulary)"
+_HEADROOM_LABEL = "best amplification (outside the vocabulary)"
 
 
 @dataclass(frozen=True)

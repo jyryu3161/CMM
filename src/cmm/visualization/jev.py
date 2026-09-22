@@ -221,4 +221,216 @@ def jev_decision_figure(
     return fig
 
 
-__all__ = ["jev_decision_figure", "jev_progress_figure"]
+def _short_method(name: str) -> str:
+    """A baseline's name with its parenthetical explanation dropped, for use on a plot."""
+
+    return name.split(" (")[0].strip()
+
+
+def _merge_labels(
+    points: Sequence[tuple[float, float, str]], *, span_x: float, span_y: float
+) -> list[tuple[float, float, str]]:
+    """One label per place on the plane, not one per thing plotted.
+
+    Designs land on the same point all the time and it is not a coincidence: OptKnock and
+    RobustKnock return the same deletions here, and two rounds forced apart by the cut can
+    still meet at the same phenotype. Drawn naively the names print on top of one another and
+    the figure claims one illegible thing where it should say two legible ones.
+
+    Points are the same place when they are within a thousandth of the plotted range on both
+    axes — a distance chosen to be smaller than a marker, so nothing visually distinct is
+    ever merged.
+    """
+
+    tol_x = max(span_x, 1e-9) / 1000.0
+    tol_y = max(span_y, 1e-9) / 1000.0
+    merged: list[tuple[float, float, list[str]]] = []
+    for x, y, label in points:
+        for index, (mx, my, names) in enumerate(merged):
+            if abs(mx - x) <= tol_x and abs(my - y) <= tol_y:
+                if label not in names:
+                    names.append(label)
+                merged[index] = (mx, my, names)
+                break
+        else:
+            merged.append((x, y, [label]))
+    return [(x, y, ", ".join(names)) for x, y, names in merged]
+
+
+def jev_design_space_figure(
+    result,
+    *,
+    width: float = 7.5,
+    height: float = 5.0,
+    column_width: int = 2,
+) -> Figure:
+    """Every design the run produced, placed on the growth-versus-product plane.
+
+    This is the figure that makes a multi-round run legible as a portfolio rather than as one
+    answer. Each round ends on a design; each design is a point; and the question a reader
+    actually has — *what does this cost me in growth, and is there a cheaper one?* — is a
+    question about where those points sit relative to each other.
+
+    The envelope is the backdrop and is the reason the points mean anything. It is the
+    projection of the flux cone onto this plane (Burgard 2003), so it bounds what any design
+    whatsoever could reach: a point near the frontier has little left to win, and a point well
+    inside it does. Without it, "9.95 at growth 0.055" is a pair of numbers with nothing to be
+    measured against.
+
+    The deterministic methods are plotted in the same axes, as squares. A reader comparing the
+    agent to OptKnock should be able to do it by looking, not by holding two tables side by
+    side — and where the agent's point sits *below and left* of a deterministic one, that is
+    worth seeing plainly rather than discovering in a footnote.
+    """
+
+    fig, ax, font = _new_figure(width, height, column_width)
+    product = str(result.config.product)
+
+    envelope = tuple(getattr(result, "envelope", ()) or ())
+    if envelope:
+        # The frontier: the most product reachable at each growth rate, and the least. Drawn
+        # as a filled band because the feasible region is what it delimits, and a reader
+        # should see a design sitting *inside* a region rather than near a line.
+        flux = [point[0] for point in envelope]
+        low = [point[1] for point in envelope]
+        high = [point[2] for point in envelope]
+        ax.fill_betweenx(
+            flux, low, high, color=PALETTE[0], alpha=0.10, zorder=0, linewidth=0
+        )
+        ax.plot(high, flux, color=PALETTE[0], linewidth=1.3, alpha=0.65, zorder=1)
+        ax.plot(low, flux, color=PALETTE[0], linewidth=1.0, alpha=0.4, zorder=1)
+        ax.plot(
+            [],
+            [],
+            color=PALETTE[0],
+            linewidth=1.3,
+            alpha=0.65,
+            label="feasible envelope",
+        )
+
+    ax.scatter(
+        [float(result.wild_type_growth)],
+        [float(result.wild_type_product_flux)],
+        marker="*",
+        s=170,
+        color="#555555",
+        zorder=5,
+        label="wild type",
+    )
+
+    # The deterministic methods, so the comparison is something a reader can see rather than
+    # something they have to assemble from two tables.
+    baseline_labels: list[tuple[float, float, str]] = []
+    for row in getattr(result, "baselines", ()) or ():
+        if row.method == "JEV agent" or not row.design:
+            continue
+        if row.product_flux != row.product_flux or row.growth != row.growth:
+            continue  # a method that could not run has no point on this plane
+        ax.scatter(
+            [float(row.growth)],
+            [float(row.product_flux)],
+            marker="s",
+            s=46,
+            facecolor="white",
+            edgecolor=PALETTE[6],
+            linewidth=1.2,
+            zorder=4,
+        )
+        baseline_labels.append(
+            (float(row.growth), float(row.product_flux), _short_method(row.method))
+        )
+
+    rounds = tuple(result.rounds)
+    best = max((record.product_flux for record in rounds), default=float("-inf"))
+    round_labels: list[tuple[float, float, str]] = []
+    for record in rounds:
+        is_best = record.product_flux >= best - 1e-9
+        ax.scatter(
+            [float(record.growth)],
+            [float(record.product_flux)],
+            marker="o",
+            s=110 if is_best else 70,
+            color=PALETTE[2] if is_best else PALETTE[4],
+            edgecolor="#23313f",
+            linewidth=1.0 if is_best else 0.6,
+            zorder=6,
+        )
+        round_labels.append(
+            (float(record.growth), float(record.product_flux), f"R{record.round_index}")
+        )
+    if rounds:
+        ax.scatter([], [], marker="o", s=70, color=PALETTE[4], label="a round's design")
+        ax.scatter(
+            [], [], marker="o", s=110, color=PALETTE[2], label="best design found"
+        )
+    ax.scatter(
+        [],
+        [],
+        marker="s",
+        s=46,
+        facecolor="white",
+        edgecolor=PALETTE[6],
+        linewidth=1.2,
+        label="deterministic method",
+    )
+
+    floor = float(result.config.growth_floor)
+    if floor > 0:
+        # Not decoration: every point left of this line was refused by CMM, so the line is
+        # the edge of what the run was allowed to keep.
+        ax.axvline(
+            floor,
+            color=PALETTE[1],
+            linestyle="--",
+            linewidth=1.1,
+            alpha=0.8,
+            zorder=2,
+            label=f"growth floor ({floor:g})",
+        )
+
+    _style(
+        ax,
+        font,
+        xlabel="growth rate (h$^{-1}$)",
+        ylabel=f"{product} flux (mmol gDW$^{{-1}}$ h$^{{-1}}$)",
+        title="What each round's design costs in growth",
+    )
+    ax.set_xlim(left=0.0)
+    ax.set_ylim(bottom=0.0)
+
+    # Labels last, once the axes know their range, and merged so two designs meeting at one
+    # phenotype are named once instead of printing over each other.
+    span_x = max(ax.get_xlim()[1] - ax.get_xlim()[0], 1e-9)
+    span_y = max(ax.get_ylim()[1] - ax.get_ylim()[0], 1e-9)
+    for x, y, label in _merge_labels(round_labels, span_x=span_x, span_y=span_y):
+        ax.annotate(
+            label,
+            (x, y),
+            textcoords="offset points",
+            xytext=(9, 6),
+            fontsize=font["tick"],
+            fontweight="bold",
+            color="#23313f",
+            zorder=7,
+        )
+    for x, y, label in _merge_labels(baseline_labels, span_x=span_x, span_y=span_y):
+        ax.annotate(
+            label,
+            (x, y),
+            textcoords="offset points",
+            xytext=(9, -11),
+            fontsize=font["tick"] - 1,
+            color="#5a6b7c",
+            zorder=4,
+        )
+
+    ax.legend(fontsize=font["tick"], frameon=False, loc="best")
+    fig.set_layout_engine("constrained")
+    return fig
+
+
+__all__ = [
+    "jev_decision_figure",
+    "jev_design_space_figure",
+    "jev_progress_figure",
+]

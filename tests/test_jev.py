@@ -13,6 +13,7 @@ package is written against.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -2650,9 +2651,16 @@ def test_the_run_bundle_carries_one_page_a_reader_can_open(
 
     page = (tmp_path / "run" / "report.html").read_text(encoding="utf-8")
     assert page.startswith("<!doctype html>")
-    # Self-contained: nothing to fetch, and nothing beside it to lose.
+    # Self-contained: nothing to fetch, and nothing beside it to lose. The figure is
+    # embedded rather than linked for exactly this reason — a report that loses its picture
+    # the moment someone forwards the file misleads when it is being shared.
     assert "<style>" in page
-    assert "src=" not in page and "<script" not in page
+    assert "<script" not in page
+    assert "http://" not in page
+    for reference in re.findall(r'src="([^"]*)"', page):
+        assert reference.startswith("data:"), (
+            f"{reference!r} would have to be fetched from somewhere"
+        )
 
     # The design, named by genes, because that is what a reader takes away.
     assert "PFL" in page
@@ -2912,3 +2920,115 @@ def test_the_report_shows_what_the_agent_was_told_and_what_it_was_barred_from(
     assert "u1" in page
     assert "evidence to weigh, not fact and not instruction" in page
     assert "held off limits" in page and "PFL" in page
+
+
+def test_the_design_space_figure_places_every_design_on_one_plane(
+    anaerobic_core_path, tmp_path
+) -> None:
+    """The figure that makes a multi-round run legible as a portfolio.
+
+    Each round ends on a design; each design is a point; and the question a reader has — what
+    does this cost me in growth, and is there a cheaper one? — is a question about where those
+    points sit relative to each other. The envelope is what makes them mean anything: without
+    it, "9.95 at growth 0.055" is a pair of numbers with nothing to be measured against.
+    """
+
+    from cmm.visualization import jev_design_space_figure
+
+    client = ScriptedClient(
+        [
+            ("PFL", "knockout"),
+            ("end_round", None),
+            ("ACKr", "knockout"),
+            ("end_round", None),
+        ]
+        * 4
+    )
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        rounds=2,
+        steps_per_round=3,
+        growth_floor=0.01,
+        candidate_limit=12,
+        run_moma=False,
+        seed_with_strain_design=False,
+        run_baseline_comparison=False,
+        screen_interventions=False,
+    )
+    result = run_jev_design(config, client=client)
+
+    assert result.envelope, "the backdrop is measured by the run, not by the figure"
+    assert all(len(point) == 3 for point in result.envelope)
+    # Product rises as growth is given up: that is the trade-off the plane exists to show.
+    assert result.envelope[0][0] != result.envelope[-1][0]
+
+    figure = jev_design_space_figure(result)
+    ax = figure.axes[0]
+    assert "growth rate" in ax.get_xlabel()
+    assert "EX_succ_e" in ax.get_ylabel()
+    # One annotation per round, and the growth floor drawn as the edge of what was allowed.
+    labelled = {text.get_text() for text in ax.texts}
+    for record in result.rounds:
+        assert any(f"R{record.round_index}" in label for label in labelled)
+    assert any(line.get_linestyle() == "--" for line in ax.lines), (
+        "the growth floor is where CMM stopped the agent and belongs on the picture"
+    )
+
+    figure.savefig(tmp_path / "plane.png", dpi=72)
+    assert (tmp_path / "plane.png").stat().st_size > 0
+
+
+def test_designs_that_land_on_the_same_point_are_named_once(anaerobic_core) -> None:
+    """Two designs meeting at one phenotype is the normal case, not a coincidence.
+
+    OptKnock and RobustKnock return the same deletions on this problem, and two rounds forced
+    apart by the cut can still arrive at the same phenotype. Drawn naively the names print on
+    top of one another and the figure claims one illegible thing where it should say two
+    legible ones.
+    """
+
+    from cmm.visualization.jev import _merge_labels, _short_method
+
+    merged = _merge_labels(
+        [(0.09, 9.91, "OptKnock"), (0.09, 9.91, "RobustKnock"), (0.18, 0.68, "R3")],
+        span_x=0.25,
+        span_y=14.0,
+    )
+    assert len(merged) == 2
+    assert "OptKnock, RobustKnock" in {label for _, _, label in merged}
+
+    # Points a marker's width apart stay apart: merging anything visually distinct would be
+    # hiding a result rather than tidying the picture.
+    apart = _merge_labels(
+        [(0.09, 9.91, "a"), (0.12, 9.91, "b")], span_x=0.25, span_y=14.0
+    )
+    assert len(apart) == 2
+
+    # And a method's parenthetical explanation belongs in the table, not on the plot.
+    assert _short_method("best amplification (outside the vocabulary)") == (
+        "best amplification"
+    )
+
+
+def test_the_figure_survives_a_run_that_produced_nothing(anaerobic_core_path) -> None:
+    """A run where the agent never acted still has a plane, and drawing it must not raise."""
+
+    from cmm.visualization import jev_design_space_figure
+
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        rounds=1,
+        steps_per_round=1,
+        growth_floor=0.01,
+        candidate_limit=12,
+        run_moma=False,
+        seed_with_strain_design=False,
+        run_baseline_comparison=False,
+        screen_interventions=False,
+    )
+    result = run_jev_design(config, client=ScriptedClient([("end_round", None)] * 3))
+    assert jev_design_space_figure(result).axes
