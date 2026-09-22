@@ -81,15 +81,33 @@ def _tables_retain_status(run: Path, tables: list[str]) -> tuple[bool, str]:
     return True, "; ".join(notes) or "no table requirement declared"
 
 
-def _planned_not_shipped() -> tuple[bool, str]:
-    """A planned feature must never appear as shipped (AGENTS.md rule 6)."""
-    from cmm.features import INCLUDED_FEATURES, PLANNED_FEATURES
+def _feature_inventory_coherent() -> tuple[bool, str]:
+    """The three feature inventories must not contradict each other.
 
-    leaked = sorted(set(PLANNED_FEATURES) & set(INCLUDED_FEATURES))
-    return (
-        not leaked,
-        "disjoint" if not leaked else f"planned reported as shipped: {leaked}",
+    Rule 6 forbids reporting a planned feature as shipped; rule 12 sends an agent to these
+    same lists to decide whether CMM can do something at all. Overlapping lists make that
+    decision wrong in both directions: a shipped-but-planned entry invites an overclaim, and
+    an excluded-but-included one invites a refusal of something CMM actually does.
+    """
+    from cmm.features import EXCLUDED_FEATURES, INCLUDED_FEATURES, PLANNED_FEATURES
+
+    included, planned, excluded = (
+        set(INCLUDED_FEATURES),
+        set(PLANNED_FEATURES),
+        set(EXCLUDED_FEATURES),
     )
+    overlaps = {
+        "included+planned": sorted(included & planned),
+        "included+excluded": sorted(included & excluded),
+        "planned+excluded": sorted(planned & excluded),
+    }
+    clashes = {label: names for label, names in overlaps.items() if names}
+    detail = (
+        f"disjoint: {len(included)} included, {len(planned)} planned, {len(excluded)} excluded"
+        if not clashes
+        else f"inventories overlap: {clashes}"
+    )
+    return not clashes, detail
 
 
 def run_task(task: dict[str, Any], run_dir: Path | None) -> list[Check]:
@@ -141,8 +159,8 @@ def main() -> int:
     checks: list[Check] = []
     for path in task_files:
         checks.extend(run_task(_load_json(path), args.run_dir))
-    passed, detail = _planned_not_shipped()
-    checks.append(Check("repository", "planned_not_shipped", passed, detail))
+    passed, detail = _feature_inventory_coherent()
+    checks.append(Check("repository", "feature_inventory_coherent", passed, detail))
 
     for check in checks:
         print(

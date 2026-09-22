@@ -205,6 +205,24 @@ full run bundle without R.
     publication report must not synthesize it into recommended targets, a strain proposal,
     summary promotion, or a figure category. Present each method's results separately and leave
     intervention selection to the user.
+12. **Call CMM's services; never re-implement the analysis.** Every number in an answer must
+    come from a function in `cmm.core`, `cmm.features`, `cmm.omics`, `cmm.workflows` or
+    `cmm.reporting` — not from a solver loop, objective, distance metric, sampler, or ranking
+    written for the occasion. A hand-written method has no `run_provenance`, no method contract
+    in `docs/VALIDATION.md`, and no test behind it, so its numbers cannot be checked by anyone
+    later and must not enter a report.
+
+    *Composing* the shipped services is expected and is what a recipe is: calling several in
+    sequence, filtering a returned frame, or plotting `to_frame()` output. The line is the
+    method itself. If you find yourself writing the optimisation, the perturbation loop, or the
+    score, stop — either a CMM service already does it, or CMM does not do it at all.
+
+    When the capability is genuinely missing, say so and stop. Check
+    `cmm.features.INCLUDED_FEATURES` for what is shipped, `PLANNED_FEATURES` for what is not yet
+    (currently `dynamic_fba`, `enzyme_constrained_modeling`, `fvseof_grouping_constraints`), and
+    `EXCLUDED_FEATURES` for what is deliberately out of scope (`elementary_flux_modes`,
+    `thermodynamics`, and others). "CMM does not implement this" is a complete and correct
+    answer; a bespoke implementation presented as a CMM result is not.
 
 ---
 

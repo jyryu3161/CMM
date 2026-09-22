@@ -8,7 +8,8 @@ contracts in [`AGENTS.md`](../AGENTS.md)** — not that its biology is right.
 Each task in [`tasks/`](tasks) names a representative request and the machine-checkable
 properties its output must have: the run validates, provenance carries the fingerprint and
 solver, the condition is explicit rather than inherited, infeasible rows survive in the tables,
-and a planned feature is never reported as shipped.
+and the shipped/planned/excluded inventories stay disjoint so that "CMM does not do this" and
+"CMM does this" cannot both be true of one capability.
 
 What it deliberately does **not** measure:
 
@@ -61,7 +62,7 @@ evidence.
 
 `run_evals.py` imports only the public surfaces it validates — `cmm.reporting` for
 `validate_production_run`, `cmm.reporting.transformation` for `validate_transformation_run`, and
-`cmm.features` for the shipped-vs-planned check. It never imports a private helper and never
+`cmm.features` for the feature-inventory check. It never imports a private helper and never
 invokes a solver, so a failing check always points at the run bundle or at those public
 contracts, never at this harness re-implementing the science.
 
