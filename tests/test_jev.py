@@ -22,6 +22,7 @@ from cmm.core.condition import Condition, ReactionBound
 from cmm.core.simulation import pfba
 from cmm.jev import (
     ACTION_CATALOGUE,
+    ACT_ACTIONS,
     ActionNotApplicable,
     JevClient,
     JevConfig,
@@ -35,8 +36,7 @@ from cmm.jev import (
     run_jev_design,
 )
 from cmm.jev._transport import DecisionResult, JevAnswer, JevUsage, _parse_decision
-from cmm.jev.actions import FORCE_ON_ACTIONS, feasible_extreme
-from cmm.jev.questions import NoAvailableAction
+from cmm.jev.questions import NoAvailableAction, available_actions
 from cmm.jev.state import ScanCache, carbon_byproducts
 
 ANAEROBIC = Condition(
@@ -222,24 +222,38 @@ def test_the_api_key_never_appears_in_an_error(monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_a_reaction_carrying_flux_gets_the_relative_moves(anaerobic_core) -> None:
-    """One knockdown strength, not two.
+def test_a_reaction_carrying_flux_can_be_deleted_or_halved(anaerobic_core) -> None:
+    """One knockdown strength, not two, and no amplification at all.
 
     A second, deeper cap mostly bought a second rejection of the same idea, and roughly
     halving an activity is the level a promoter swap or an RBS change can actually aim at.
     """
 
     names = [action.name for action in applicable_actions(8.2)]
-    assert names == ["knockout", "knockdown_50", "amplify_2x", "amplify_5x"]
+    assert names == ["knockout", "knockdown_50"]
     assert "knockdown_25" not in ACTION_CATALOGUE
 
 
-def test_a_reaction_at_zero_gets_the_switch_on_moves_instead() -> None:
-    """Without these the agent could never start a pathway that is off."""
+def test_nothing_in_the_vocabulary_can_force_flux_up() -> None:
+    """The restriction that defines this vocabulary, asserted rather than described.
+
+    A lower bound on a flux is not what over-expression does: it tells the solver the flux
+    *must* be carried, by whatever route is cheapest, while stronger expression only raises a
+    capacity the cell may decline to use. Every move here is therefore a cap.
+    """
+
+    for name in ("amplify_2x", "amplify_5x", "force_on_low", "force_on_high"):
+        assert name not in ACTION_CATALOGUE
+    for action in ACT_ACTIONS:
+        assert action.mode in ("knockout", "knockdown")
+
+
+def test_a_reaction_at_zero_can_only_be_deleted() -> None:
+    """A knockdown needs a flux to be half of. A deletion does not, and is still worth
+    making: OptKnock's most valuable deletions close routes carrying nothing today."""
 
     names = [action.name for action in applicable_actions(0.0)]
-    assert names == ["knockout", "force_on_low", "force_on_high"]
-    assert not {"amplify_2x", "knockdown_50"} & set(names)
+    assert names == ["knockout"]
 
 
 def test_a_knockdown_caps_the_magnitude_without_opening_a_direction(
@@ -254,45 +268,28 @@ def test_a_knockdown_caps_the_magnitude_without_opening_a_direction(
     assert intervention.lower_bound == 0.0  # the reaction was irreversible; it stays so
 
 
-def test_a_relative_move_on_a_zero_flux_reaction_is_refused_not_reinterpreted(
+def test_a_knockdown_on_a_zero_flux_reaction_is_refused_not_reinterpreted(
     anaerobic_core,
 ) -> None:
-    with pytest.raises(ActionNotApplicable, match="nothing to scale"):
+    with pytest.raises(ActionNotApplicable, match="nothing to halve"):
         build_intervention(
-            anaerobic_core, "FRD7", ACTION_CATALOGUE["amplify_2x"], reference_flux=0.0
+            anaerobic_core,
+            "FRD7",
+            ACTION_CATALOGUE["knockdown_50"],
+            reference_flux=0.0,
         )
 
 
-def test_switching_a_reaction_on_uses_its_loop_free_maximum(anaerobic_core) -> None:
-    """The headline reason the extreme must be loopless.
-
-    A plain LP maximisation of ``FRD7`` returns its 1000 bound through the
-    ``FRD7``/``SUCDi`` cycle, on a model taking up 10 mmol gDW^-1 h^-1 of glucose. Sixty per
-    cent of that would be a physically meaningless target that the solver would satisfy with
-    a futile cycle.
-    """
-
-    low, high = feasible_extreme(anaerobic_core, "FRD7")
-    assert low == pytest.approx(0.0, abs=1e-6)
-    assert 5.0 < high < 30.0, (
-        "a loop-free maximum must be on the scale of the carbon input"
-    )
+def test_a_deletion_names_the_genes_it_deletes(anaerobic_core) -> None:
+    """The moves are gene edits, so a design row that names only a reaction id is a row a
+    wet-lab reader cannot act on."""
 
     intervention = build_intervention(
-        anaerobic_core, "FRD7", ACTION_CATALOGUE["force_on_high"], reference_flux=0.0
+        anaerobic_core, "LDH_D", ACTION_CATALOGUE["knockout"], reference_flux=0.0
     )
-    assert intervention.exploratory is True
-    assert intervention.lower_bound == pytest.approx(0.6 * high)
-    assert "loop-free maximum" in intervention.describe()
-
-
-def test_a_switch_on_move_is_refused_on_a_reaction_that_already_carries_flux(
-    anaerobic_core,
-) -> None:
-    with pytest.raises(ActionNotApplicable, match="already carries"):
-        build_intervention(
-            anaerobic_core, "PFL", FORCE_ON_ACTIONS[0], reference_flux=17.8
-        )
+    expected = tuple(sorted(g.id for g in anaerobic_core.reactions.LDH_D.genes))
+    assert intervention.genes == expected
+    assert expected[0] in intervention.describe()
 
 
 def test_an_intervention_converts_to_the_bound_cmm_already_applies(
@@ -493,7 +490,7 @@ def test_a_candidate_with_nothing_left_to_try_says_so(anaerobic_core) -> None:
             product="EX_succ_e",
             growth_floor=0.05,
             allow_look=False,
-            exclude={"knockout", "force_on_low", "force_on_high"},
+            exclude={"knockout"},
         )
 
 
@@ -502,15 +499,16 @@ def test_a_candidate_with_nothing_left_to_try_says_so(anaerobic_core) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_a_scripted_game_switches_the_pathway_on_and_records_every_move(
+def test_a_scripted_game_redirects_carbon_to_the_product_and_records_every_move(
     anaerobic_core_path, tmp_path
 ) -> None:
     """The end-to-end result: a product that was zero is being made, and the run says how."""
 
-    # Switching succinyl-CoA synthetase on opens the reductive route to succinate. It is a
+    # Deleting pyruvate formate lyase closes the formate/acetate branch and pushes carbon
+    # down the reductive route to succinate: 0 -> 0.68 at a growth rate of 0.18. It is a
     # single move on purpose: the assertion is that the engine turns a chosen move into real
     # product flux, not that this particular design is the best one.
-    client = ScriptedClient([("SUCOAS", "force_on_high")])
+    client = ScriptedClient([("PFL", "knockout")])
     config = JevConfig(
         model_path=anaerobic_core_path,
         product="EX_succ_e",
@@ -519,7 +517,7 @@ def test_a_scripted_game_switches_the_pathway_on_and_records_every_move(
         output_dir=tmp_path / "run",
         rounds=2,
         steps_per_round=3,
-        max_interventions=3,
+        max_knockouts=3,
         growth_floor=0.01,
         candidate_limit=12,
         run_moma=False,
@@ -535,8 +533,8 @@ def test_a_scripted_game_switches_the_pathway_on_and_records_every_move(
     )
 
     assert result.wild_type_product_flux == pytest.approx(0.0, abs=1e-6)
-    assert result.best_product_flux > 1.0, (
-        "forcing the reductive branch must make succinate"
+    assert result.best_product_flux > 0.5, (
+        "closing the fermentative branch must push carbon to succinate"
     )
     assert result.best_growth >= config.growth_floor
     assert result.summary()["beat_wild_type"] is True
@@ -586,12 +584,12 @@ def test_cmm_enforces_the_growth_floor_whatever_the_agent_chose(
     )
 
 
-def test_the_intervention_cap_is_never_exceeded(anaerobic_core_path, tmp_path) -> None:
+def test_the_deletion_budget_is_never_exceeded(anaerobic_core_path, tmp_path) -> None:
     client = ScriptedClient(
         [
-            ("FRD7", "force_on_high"),
-            ("FUM", "force_on_high"),
-            ("SUCOAS", "force_on_high"),
+            ("PFL", "knockout"),
+            ("ACKr", "knockout"),
+            ("ALCD2x", "knockout"),
         ]
         * 4
     )
@@ -602,7 +600,8 @@ def test_the_intervention_cap_is_never_exceeded(anaerobic_core_path, tmp_path) -
         output_dir=tmp_path / "run",
         rounds=3,
         steps_per_round=4,
-        max_interventions=2,
+        max_knockouts=2,
+        max_knockdowns=0,
         growth_floor=0.01,
         candidate_limit=12,
         run_moma=False,
@@ -613,6 +612,128 @@ def test_the_intervention_cap_is_never_exceeded(anaerobic_core_path, tmp_path) -
     result = run_jev_design(config, client=client)
     assert len(result.final_interventions) <= 2
     assert max(tick.n_active_interventions for tick in result.ticks) <= 2
+
+
+def test_the_two_budgets_are_counted_separately(anaerobic_core) -> None:
+    """Deletions and knockdowns are different things to build, so they are limited apart.
+
+    One shared cap starved the run: the seeded OptKnock design takes three deletions on its
+    own, so a total of four left the agent one edit and every round ended a step or two after
+    adopting it.
+    """
+
+    fluxes = pfba(anaerobic_core).fluxes
+    candidate = next(
+        c
+        for c in build_candidates(
+            anaerobic_core,
+            product_reaction_id="EX_succ_e",
+            reference_fluxes=fluxes,
+            current_fluxes=fluxes,
+            limit=16,
+        )
+        if c.reaction_id == "PFL"  # carries flux, so both moves are defined for it
+    )
+    both = {a.name for a in available_actions(candidate, allow_look=False)}
+    assert both == {"knockout", "knockdown_50"}
+
+    # A spent deletion budget removes the deletion, not the reaction.
+    assert {
+        a.name
+        for a in available_actions(
+            candidate, allow_look=False, allowed_modes=("knockdown",)
+        )
+    } == {"knockdown_50"}
+    assert {
+        a.name
+        for a in available_actions(
+            candidate, allow_look=False, allowed_modes=("knockout",)
+        )
+    } == {"knockout"}
+    assert available_actions(candidate, allow_look=False, allowed_modes=()) == ()
+
+    config = JevConfig(model_path="m.xml", product="EX_succ_e")
+    assert config.room_for(0, 0) == ("knockout", "knockdown")
+    assert config.room_for(config.max_knockouts, 0) == ("knockdown",)
+    assert config.room_for(0, config.max_knockdowns) == ("knockout",)
+    assert config.room_for(config.max_knockouts, config.max_knockdowns) == ()
+
+
+def test_a_run_can_be_stopped_and_keeps_what_it_played(
+    anaerobic_core_path, tmp_path
+) -> None:
+    """Stopping is an answer about how long to look, not a reason to discard the answer."""
+
+    from cmm.jev.engine import STOP_REQUESTED
+
+    client = ScriptedClient([("PFL", "knockout"), ("ACKr", "knockout")] * 20)
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        rounds=4,
+        steps_per_round=10,
+        growth_floor=0.01,
+        candidate_limit=12,
+        run_moma=False,
+        seed_with_strain_design=False,
+        # On purpose: the point is that a stopped run skips it and says so.
+        run_baseline_comparison=True,
+    )
+
+    played: list[object] = []
+
+    def stop_after_three() -> bool:
+        return len(played) >= 3
+
+    result = run_jev_design(
+        config,
+        client=client,
+        on_tick=lambda tick, fluxes: played.append(tick),
+        should_stop=stop_after_three,
+    )
+
+    assert len(result.ticks) == 3, (
+        "the flag is read once per step, so it stops on the next"
+    )
+    assert result.best_product_flux > 0.5, "what was played is still scored"
+    assert any(STOP_REQUESTED in note for note in result.notes)
+    assert result.baselines == ()
+    assert any("baseline comparison was skipped" in note for note in result.notes)
+
+
+def test_a_lone_available_move_is_taken_without_asking(
+    anaerobic_core_path, tmp_path
+) -> None:
+    """One option is not a decision, and asking costs a call and a step.
+
+    This matters now the budgets are separate: once the knockdown budget is gone, a reaction
+    carrying no wild-type flux has exactly one legal move.
+    """
+
+    client = ScriptedClient([("FRD7", "knockout")] * 6)
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        rounds=1,
+        steps_per_round=2,
+        max_knockdowns=0,
+        growth_floor=0.01,
+        candidate_limit=12,
+        run_moma=False,
+        allow_look_actions=False,
+        seed_with_strain_design=False,
+        run_baseline_comparison=False,
+        screen_interventions=False,
+    )
+    result = run_jev_design(config, client=client)
+
+    first = result.ticks[0]
+    assert first.action == "knockout"
+    assert first.action_ranking == (("knockout", 1.0),)
+    # One call per step, not two: the second stage was never asked.
+    assert len(client.asked) == len(result.ticks)
 
 
 def test_the_run_stops_when_the_budget_is_spent(anaerobic_core_path, tmp_path) -> None:
@@ -642,7 +763,7 @@ def test_the_run_stops_when_the_budget_is_spent(anaerobic_core_path, tmp_path) -
 def test_the_run_writes_one_artifact_per_role_and_every_file_exists(
     anaerobic_core_path, tmp_path
 ) -> None:
-    client = ScriptedClient([("FRD7", "force_on_high"), ("FUM", "force_on_low")])
+    client = ScriptedClient([("PFL", "knockout"), ("ACKr", "knockout")])
     config = JevConfig(
         model_path=anaerobic_core_path,
         product="EX_succ_e",
@@ -699,7 +820,7 @@ def test_the_run_writes_one_artifact_per_role_and_every_file_exists(
 def test_provenance_records_the_model_that_answered_and_the_question_set(
     anaerobic_core_path, tmp_path
 ) -> None:
-    client = ScriptedClient([("FRD7", "force_on_high")])
+    client = ScriptedClient([("PFL", "knockout")])
     config = JevConfig(
         model_path=anaerobic_core_path,
         product="EX_succ_e",
@@ -738,7 +859,7 @@ def test_the_run_provenance_carries_every_required_field(
     # Imported from the registry module so the two lists cannot drift apart.
     from test_provenance_surface import REQUIRED_FIELDS
 
-    client = ScriptedClient([("FRD7", "force_on_high")])
+    client = ScriptedClient([("PFL", "knockout")])
     config = JevConfig(
         model_path=anaerobic_core_path,
         product="EX_succ_e",
@@ -761,7 +882,7 @@ def test_the_run_provenance_carries_every_required_field(
 def test_the_state_the_agent_sees_carries_the_engineering_evidence(
     anaerobic_core_path, tmp_path
 ) -> None:
-    client = ScriptedClient([("FRD7", "force_on_high")])
+    client = ScriptedClient([("PFL", "knockout")])
     config = JevConfig(
         model_path=anaerobic_core_path,
         product="EX_succ_e",
@@ -783,7 +904,8 @@ def test_the_state_the_agent_sees_carries_the_engineering_evidence(
     assert "growth_floor_per_h" in state["scoreboard"]
     assert "atp_turnover" in state["cofactor_balance"]
     assert "nadh_turnover" in state["cofactor_balance"]
-    assert state["budget"]["max_interventions"] == config.max_interventions
+    assert state["budget"]["gene_deletions_allowed"] == config.max_knockouts
+    assert state["budget"]["gene_knockdowns_allowed"] == config.max_knockdowns
     assert state["records"], "the board must not be empty"
 
 
@@ -791,7 +913,12 @@ def test_an_invalid_config_is_rejected_before_anything_is_solved() -> None:
     for overrides, message in (
         ({"rounds": 0}, "rounds"),
         ({"steps_per_round": 0}, "steps_per_round"),
-        ({"max_interventions": 0}, "max_interventions"),
+        ({"max_knockouts": -1}, "max_knockouts"),
+        ({"max_knockdowns": -1}, "max_knockdowns"),
+        (
+            {"max_knockouts": 0, "max_knockdowns": 0},
+            "no move it is allowed to make",
+        ),
         ({"candidate_limit": 1}, "candidate_limit"),
         ({"question_set": "nope"}, "unknown JEV question set"),
         ({"max_cost_usd": 0.0}, "max_cost_usd"),
@@ -1059,7 +1186,7 @@ def test_a_proven_design_can_be_adopted_as_one_move(
         output_dir=tmp_path / "run",
         rounds=1,
         steps_per_round=1,
-        max_interventions=4,
+        max_knockouts=4,
         growth_floor=0.05,
         candidate_limit=24,
         run_moma=False,
@@ -1082,18 +1209,19 @@ def test_a_proven_design_can_be_adopted_as_one_move(
 # ---------------------------------------------------------------------------
 
 
-def test_the_amplification_screen_measures_what_the_agent_would_guess_wrong(
+def test_the_intervention_screen_measures_what_the_agent_would_guess_wrong(
     anaerobic_core_path, tmp_path
 ) -> None:
     """CMM answers the question the agent is systematically bad at.
 
-    Asked which reaction to amplify for succinate, the agent reaches for fumarate reductase —
-    the direct product-forming step, which is already saturated and buys nothing. The screen
-    solves the question instead of reasoning about it, and the record carries the measured
-    change rather than an expectation.
+    Which branch competes with the product is a property of the whole network at the current
+    bounds, not of a reaction's own stoichiometry, and reasoning from the latter is
+    systematically wrong — a deletion that pays on the wild type can be worthless once three
+    other deletions are standing. The screen solves the question instead of reasoning about
+    it, and the record carries the measured change rather than an expectation.
     """
 
-    client = ScriptedClient([("FRD7", "amplification_screen"), ("end_round", None)])
+    client = ScriptedClient([("FRD7", "envelope_probe"), ("end_round", None)])
     config = JevConfig(
         model_path=anaerobic_core_path,
         product="EX_succ_e",
@@ -1114,10 +1242,24 @@ def test_the_amplification_screen_measures_what_the_agent_would_guess_wrong(
     records = {r["id"]: r["record"] for r in client.states[-1]["records"]}
     measured = [text for text in records.values() if "measured" in text.lower()]
     assert measured, "the screen's numbers must reach the board"
+    assert any("deleting it" in text for text in measured)
+    assert any("halving it" in text for text in measured)
     assert any("raises the product" in text for text in measured)
+    # Essentiality comes free with the deletion solve, so the agent never has to spend a step
+    # asking for it — and it is not offered, because the answer is already on the board.
+    assert all("essential" in text.lower() for text in records.values()), (
+        "the deletion solve already knows whether the cell survives without each reaction"
+    )
 
 
-def test_a_screened_reaction_is_not_screened_again(anaerobic_core) -> None:
+def test_the_screen_is_not_a_move_the_agent_can_spend_a_step_on(anaerobic_core) -> None:
+    """The screen is a fact, not a decision, so it is recomputed rather than offered.
+
+    Leaving it as a move meant the agent skipped it: given the cofactor reading it would
+    infer a plausible answer and act on the inference instead of the measurement. Partial
+    information displacing measurement is worse than no information.
+    """
+
     from cmm.jev.state import CandidateEvidence
 
     candidate = CandidateEvidence(
@@ -1134,7 +1276,8 @@ def test_a_screened_reaction_is_not_screened_again(anaerobic_core) -> None:
         net_nadh=-1.0,
         net_nadph=0.0,
         atp_production_share=0.0,
-        amplification_gain=0.0,
+        deletion_gain=0.0,
+        knockdown_gain=None,
     )
     offered = get_question_set().action_question(
         candidate,
@@ -1142,7 +1285,10 @@ def test_a_screened_reaction_is_not_screened_again(anaerobic_core) -> None:
         growth_floor=0.05,
         allow_look=True,
     )["action"]["criteria"]
+    assert "intervention_screen" not in offered
     assert "amplification_screen" not in offered
+    # FRD7 carries no wild-type flux, so halving it is not a move that exists either.
+    assert set(offered) & {"knockout"} and "knockdown_50" not in offered
 
 
 def test_the_comparison_scores_every_method_the_same_way(anaerobic_core) -> None:
@@ -1381,7 +1527,7 @@ def test_a_later_round_can_see_what_the_earlier_ones_achieved(
     """Without the log every round starts blind to the ones before it."""
 
     client = ScriptedClient(
-        [("SUCOAS", "force_on_high"), ("end_round", None), ("end_round", None)]
+        [("PFL", "knockout"), ("end_round", None), ("end_round", None)]
     )
     config = JevConfig(
         model_path=anaerobic_core_path,
@@ -1411,7 +1557,7 @@ def test_going_back_to_the_best_design_restores_it_whole(
 
     client = ScriptedClient(
         [
-            ("SUCOAS", "force_on_high"),
+            ("PFL", "knockout"),
             ("undo_last", None),
             ("restore_best_design", None),
         ]
@@ -1422,7 +1568,7 @@ def test_going_back_to_the_best_design_restores_it_whole(
         biomass="Biomass_Ecoli_core",
         rounds=1,
         steps_per_round=3,
-        max_interventions=3,
+        max_knockouts=3,
         growth_floor=0.01,
         candidate_limit=12,
         run_moma=False,
@@ -1442,9 +1588,7 @@ def test_the_distance_check_reports_how_much_has_to_change(
 ) -> None:
     """A design needing forty reactions to change is a harder strain than one needing five."""
 
-    client = ScriptedClient(
-        [("SUCOAS", "force_on_high"), ("FRD7", "state_distance_check")]
-    )
+    client = ScriptedClient([("PFL", "knockout"), ("FRD7", "state_distance_check")])
     config = JevConfig(
         model_path=anaerobic_core_path,
         product="EX_succ_e",
@@ -1522,7 +1666,7 @@ def test_the_brief_reaches_the_agent_without_widening_what_it_may_do(
 def test_a_round_ends_when_its_steps_run_out(anaerobic_core_path) -> None:
     """A step is one decision, including an undo and including a scan that changes nothing."""
 
-    client = ScriptedClient([("FRD7", "essentiality_scan")] * 20)
+    client = ScriptedClient([("FRD7", "envelope_probe")] * 20)
     config = JevConfig(
         model_path=anaerobic_core_path,
         product="EX_succ_e",
@@ -1546,17 +1690,18 @@ def test_a_round_ends_when_its_steps_run_out(anaerobic_core_path) -> None:
 def test_a_move_rejected_for_being_too_strong_says_so(
     anaerobic_core_path, tmp_path
 ) -> None:
-    """The difference between "wrong" and "too much" is worth 8% of the product.
+    """The difference between "wrong" and "too much" is a real design.
 
-    Watching a run: ``force_on_high`` on the glyoxylate shunt was refused on the growth floor,
-    the agent moved to a different reaction, and what ``force_on_low`` on that same reaction
-    would have collected was left behind. The rejection now names the gentler move.
+    Watching a run: a move refused on the growth floor sent the agent to a different reaction
+    entirely, and what the gentler version of the same move would have collected was left
+    behind. The rejection now names it. With deletions and knockdowns, there is exactly one
+    such pair, and it is the one that matters — a gene the cell cannot live without can very
+    often live at half.
     """
 
     from cmm.jev.actions import GENTLER_ALTERNATIVE
 
-    assert GENTLER_ALTERNATIVE["force_on_high"] == "force_on_low"
-    assert GENTLER_ALTERNATIVE["amplify_5x"] == "amplify_2x"
+    assert GENTLER_ALTERNATIVE["knockout"] == "knockdown_50"
 
     # Deleting pyruvate formate lyase drops anaerobic growth from 0.2117 to 0.18, so a
     # floor of 0.19 refuses it while a 50% cap on the same reaction is still worth trying.
@@ -1572,7 +1717,7 @@ def test_a_move_rejected_for_being_too_strong_says_so(
         run_moma=False,
         seed_with_strain_design=False,
         run_baseline_comparison=False,
-        screen_amplifications=False,
+        screen_interventions=False,
     )
     result = run_jev_design(config, client=client)
 
@@ -1610,7 +1755,7 @@ def test_what_an_amplification_would_buy_is_measured_not_asked_for(
         run_moma=False,
         seed_with_strain_design=False,
         run_baseline_comparison=False,
-        screen_amplifications=True,
+        screen_interventions=True,
     )
     run_jev_design(config, client=client)
 
@@ -1899,7 +2044,7 @@ def test_nothing_in_the_question_set_assumes_one_organism_or_one_product(
         allow_look=True,
     )["target"]
     action = question_set.action_question(
-        board[0], product="EX_lac__D_e", growth_floor=0.2, allow_look=False
+        board[0], product="EX_lac__D_e", growth_floor=0.2, allow_look=True
     )
 
     # Only the wording this package authors. A criterion naming one reaction carries that
@@ -1939,7 +2084,7 @@ def test_each_round_is_an_independent_attempt(anaerobic_core_path) -> None:
     the bounds that reached it.
     """
 
-    client = ScriptedClient([("SUCOAS", "force_on_high"), ("end_round", None)] * 4)
+    client = ScriptedClient([("PFL", "knockout"), ("end_round", None)] * 4)
     config = JevConfig(
         model_path=anaerobic_core_path,
         product="EX_succ_e",
@@ -1958,7 +2103,7 @@ def test_each_round_is_an_independent_attempt(anaerobic_core_path) -> None:
     # from the round before were still standing: an intervened reaction leaves the board.
     firsts = [tick for tick in result.ticks if tick.tick_index == 1]
     assert len(firsts) == 3
-    assert {tick.target for tick in firsts} == {"SUCOAS"}
+    assert {tick.target for tick in firsts} == {"PFL"}
     assert all(tick.outcome == "applied" for tick in firsts)
     # Every round starts from the wild type, so every round's first move sees no design.
     assert all(tick.n_active_interventions == 1 for tick in firsts)
@@ -2009,3 +2154,59 @@ def test_the_substrate_is_detected_rather_than_asked_for(anaerobic_core) -> None
     empty = {r.id: 0.0 for r in anaerobic_core.reactions}
     empty["EX_co2_e"] = -5.0
     assert detect_substrate(anaerobic_core, empty) is None
+
+
+def test_the_headroom_row_prices_what_the_vocabulary_gave_up(anaerobic_core) -> None:
+    """The cost of banning amplification, measured on the design being scored.
+
+    It has to be measured on the design and not on the wild type, because the two answers are
+    nothing alike: FSEOF's top amplification target on the wild type buys nothing here, while
+    the same method ranked on a design that already deletes the fermentative branches puts the
+    glyoxylate shunt near the top.
+
+    And it has to respect the growth floor, which is why the number is not a constant. On the
+    four-edit design the agent reaches, forcing the glyoxylate shunt would give 10.76 but
+    leaves growth at 0.041; at a floor of 0.05 that is not an available move, and the best one
+    that is reaches about 10.04.
+    """
+
+    pytest.importorskip("straindesign")
+    from cmm.jev.benchmark import _HEADROOM_LABEL, compare_with_baselines
+
+    design = tuple(
+        build_intervention(
+            anaerobic_core,
+            reaction_id,
+            ACTION_CATALOGUE[action],
+            reference_flux=float(pfba(anaerobic_core).fluxes.get(reaction_id, 0.0)),
+        )
+        for reaction_id, action in (
+            ("ACALD", "knockout"),
+            ("D_LACt2", "knockout"),
+            ("THD2", "knockout"),
+            ("ACKr", "knockdown_50"),
+        )
+    )
+    rows = compare_with_baselines(
+        anaerobic_core,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        growth_floor=0.05,
+        jev_interventions=design,
+        run_single_gene_screen=False,
+    )
+    headroom = next(row for row in rows if row.method == _HEADROOM_LABEL)
+    agent = next(row for row in rows if row.method == "JEV agent")
+
+    assert headroom.status == "optimal"
+    assert headroom.growth >= 0.05, "a move that kills the strain is not headroom"
+    assert headroom.product_flux > agent.product_flux
+    assert "OUTSIDE the agent's vocabulary" in headroom.note
+
+    # And it is excluded from the verdict: scoring the agent against a move it was forbidden
+    # to play is not a comparison. It is named in the verdict's text instead.
+    from cmm.jev.benchmark import comparison_summary
+
+    summary = comparison_summary(rows, product="EX_succ_e")
+    assert summary["best_deterministic_method"] != _HEADROOM_LABEL
+    assert "amplification" in str(summary["verdict"])

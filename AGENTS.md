@@ -99,9 +99,11 @@ A complete engineering answer uses both: inverse methods to propose, forward met
 decision model in a loop: CMM renders the metabolic state, JEV picks one move from a fixed
 vocabulary, CMM executes it and re-solves. **CMM enforces viability** — a move that makes the
 model infeasible or breaches the growth floor is reverted whatever the agent predicted — while
-**JEV chooses the strategy**. Its CMM solves are deterministic; its decisions are not, so a
-single run is never the method's performance. It needs `OPENROUTER_API_KEY`; nothing else in
-CMM does. See `docs/scenarios/SC-03-jev-agent-design.md`.
+**JEV chooses the strategy**. Its vocabulary is **down-regulation only**, gene deletion and
+50% knockdown, budgeted separately; it cannot amplify, and every run measures what that
+restriction cost. Its CMM solves are deterministic; its decisions are not, so a single run is
+never the method's performance. It needs `OPENROUTER_API_KEY`; nothing else in CMM does. See
+`docs/scenarios/SC-03-jev-agent-design.md`.
 
 ---
 

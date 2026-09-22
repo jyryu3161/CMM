@@ -94,13 +94,22 @@ JEV is a *System One* model: it generates no text and returns a typed answer cho
 criteria CMM supplied, so it cannot name a reaction the model does not contain and there is no
 output to parse. Each tick, CMM renders the metabolic state as compact JSON — fluxes, distance
 to the product, ATP and redox balance, what each active intervention actually bought — and JEV
-picks one move: a knockout, a knockdown, an amplification, switching an unused reaction on,
-withdrawing an earlier move, going back to the best design the run has found, running
-OptKnock or an FSEOF or essentiality scan, or ending the round. CMM applies it, re-solves with
-pFBA and MOMA, and redraws the flux map. In the desktop application's *JEV Agent* tab the map
-moves while the agent is still playing, a progress bar counts the steps, and a text box takes
-whatever the person running it knows that the model does not — published targets, a growth
-rate the strain has to hold, a cofactor they expect to be limiting.
+picks one move: delete a gene, weaken it to half, withdraw an earlier move, go back to the
+best design the run has found, run OptKnock or an FSEOF or envelope scan, or end the round.
+CMM applies it, re-solves with pFBA and MOMA, and redraws the flux map. In the desktop
+application's *JEV Agent* tab the map moves while the agent is still playing, progress bars
+count the rounds and the steps, a running total shows what the run has spent, a Stop button
+ends it after the current step, and a text box takes whatever the person running it knows
+that the model does not — published targets, a growth rate the strain has to hold, a cofactor
+they expect to be limiting.
+
+**The vocabulary is down-regulation only.** A lower bound on a flux is not what
+over-expression does: it tells the solver the cell *must* carry that flux, by whatever route
+is cheapest, while stronger expression only raises a capacity the cell may decline to use.
+Deletions and knockdowns are caps — they say what the cell cannot do, which is what deleting
+a gene or weakening its promoter achieves. The restriction costs product, and every run
+prices it with a `best amplification on top of this design` row rather than leaving it as an
+argument.
 
 The screen carries two things no deterministic method reports: the **guaranteed product** —
 the worst the design gives while growing as fast as it can, so a pFBA number the strain need
@@ -116,12 +125,14 @@ withdraw itself.
 **Every run scores itself against the deterministic methods**, on the same model and the
 same growth floor, every design applied and solved the same way. On the shipped anaerobic
 succinate example the best single gene deletion of 71 reaches 0.211 mmol gDW⁻¹ h⁻¹, OptKnock
-and RobustKnock reach 9.911, and the agent reaches 10.761 — but only because it is handed
-OptKnock's own proven design and adds the one move OptKnock cannot express, forcing flux
-through the glyoxylate shunt, at a real cost in growth. Left to search on its own it does not
-match 9.911 at all: the winning design deletes reactions carrying no flux in the wild type,
-and a board built from where the flux is today cannot see them. Over ten runs of one
-configuration, all eight reached 10.761, in six steps and five seconds each.
+and RobustKnock reach 9.911, and the agent reaches 9.946 — but only because it is handed
+OptKnock's own proven design and adds the one move OptKnock cannot express: a *partial*
+knockdown, its own variables being present-or-absent. Left to search on its own it does not
+match 9.911 at all, because the winning design deletes reactions carrying no flux in the wild
+type and a board built from where the flux is today cannot see them. The +0.4% margin is
+small and honestly won — an exhaustive screen of every deletion and every 50% knockdown on
+top of OptKnock's design reaches the same 9.9461, so the agent found the best its vocabulary
+allows.
 
 Measured on `e_coli_core`: two calls per move, about 0.6 s and $0.00016 each, so a full run
 costs a fraction of a cent. **The CMM solves in a run are deterministic; JEV's decisions are

@@ -14,6 +14,8 @@ One tick is two calls:
    also yields a complete ranking of the board, which the engine records.
 2. **action** — a ``choice`` over the moves that are actually applicable to the chosen
    reaction, alongside a ``score`` for the expected gain and a ``noul`` for the growth risk.
+   "Applicable" now also means "within budget": knockouts and knockdowns are limited
+   separately, so a move whose own budget is spent is never put on the list.
 
 Two calls rather than one because the product of the two vocabularies (every reaction times
 every move) would be a criteria set too large to read and too large for a 32K context.
@@ -52,6 +54,48 @@ BENEFIT_KEY = "benefit"
 RISK_KEY = "growth_risk"
 
 
+def available_actions(
+    candidate: CandidateEvidence,
+    *,
+    allow_look: bool,
+    exclude: Collection[str] = (),
+    allowed_modes: Collection[str] = ("knockout", "knockdown"),
+) -> tuple[Action, ...]:
+    """Every move that could actually be executed on this candidate right now.
+
+    Four things narrow the list, and each one exists because leaving it out cost real steps:
+
+    * a move undefined for the reaction (a knockdown of a flux that is already zero);
+    * a move already tried and rejected on this reaction, in ``exclude``;
+    * a move whose budget is spent — ``allowed_modes`` is how the separate knockout and
+      knockdown limits reach the question, so a design that may take no further deletion is
+      never offered one;
+    * a scan whose answer is already in the record, which would spend a step to learn nothing.
+
+    The engine uses this directly as well as through the question: when exactly one move is
+    left there is nothing to decide, so it is taken without paying for a second call.
+    """
+
+    modes = set(allowed_modes)
+    blocked = set(exclude)
+    actions: list[Action] = [
+        action
+        for action in applicable_actions(candidate.reference_flux)
+        if action.name not in blocked and action.mode in modes
+    ]
+    if allow_look:
+        actions.extend(
+            action
+            for action in LOOK_ACTIONS
+            if action.name not in blocked
+            and not (
+                action.name == "essentiality_scan" and candidate.essential is not None
+            )
+            and not (action.name == "fseof_scan" and candidate.fseof_slope is not None)
+        )
+    return tuple(actions)
+
+
 @dataclass(frozen=True)
 class QuestionSet:
     """A named, versioned way of asking. ``version`` goes into every run's provenance."""
@@ -83,6 +127,7 @@ class QuestionSet:
         growth_floor: float,
         allow_look: bool,
         exclude: Collection[str] = (),
+        allowed_modes: Collection[str] = ("knockout", "knockdown"),
     ) -> dict[str, Mapping[str, object]]:
         """Stage two: what to do to the reaction stage one chose."""
 
@@ -175,15 +220,19 @@ class ProductionV1(QuestionSet):
         instructions = (
             f"Choose the single reaction to act on next so that flux through {product} "
             f"increases, while the growth rate stays at or above {growth_floor} per hour. "
+            "The only moves available are deleting the reaction's genes or weakening them to "
+            "half their wild-type activity; nothing can be over-expressed, so look for flux "
+            "that competes with the product rather than flux that feeds it. "
             "The evidence for each option is the record with the same id in the state "
             "above: its wild-type flux, its current flux, how many steps it sits from the "
-            "product, and what it does to the ATP and redox pools. "
-            "Prefer a reaction whose change would redirect carbon or reducing power toward "
-            "the product over one that is merely large. A record saying OptKnock or "
-            "RobustKnock deletes the reaction is the strongest evidence on the board: those "
-            "are proofs that the deletion forces the product at maximum growth, and several "
-            "of them name reactions carrying no flux today, which the cell would switch to "
-            "once the obvious routes are shut. "
+            "product, what it does to the ATP and redox pools, and its genes. "
+            "A record beginning MEASURED reports what CMM found when it actually made the "
+            "move on the design as it stands, and outranks every other line, including your "
+            "own reasoning about the stoichiometry. "
+            "A record saying OptKnock or RobustKnock deletes the reaction is the next "
+            "strongest: those are proofs that the deletion forces the product at maximum "
+            "growth, and several of them name reactions carrying no flux today, which the "
+            "cell would switch to once the obvious routes are shut. "
         )
         if allow_look:
             instructions += (
@@ -203,30 +252,18 @@ class ProductionV1(QuestionSet):
         growth_floor: float,
         allow_look: bool,
         exclude: Collection[str] = (),
+        allowed_modes: Collection[str] = ("knockout", "knockdown"),
     ) -> dict[str, Mapping[str, object]]:
-        blocked = set(exclude)
-        actions: list[Action] = [
-            action
-            for action in applicable_actions(candidate.reference_flux)
-            if action.name not in blocked
-        ]
-        if allow_look:
-            # A scan whose answer is already in the record would spend a tick to learn
-            # nothing. Withholding it is what stops the agent looping between two scans.
-            actions.extend(
-                action
-                for action in LOOK_ACTIONS
-                if action.name not in blocked
-                and not (
-                    action.name == "essentiality_scan"
-                    and candidate.essential is not None
-                )
-                and not (
-                    action.name == "fseof_scan" and candidate.fseof_slope is not None
-                )
-            )
+        actions = available_actions(
+            candidate,
+            allow_look=allow_look,
+            exclude=exclude,
+            allowed_modes=allowed_modes,
+        )
         criteria = {action.name: action.description for action in actions}
         if len(criteria) < 2:
+            # One option is not a question. The engine takes a lone move without asking; it
+            # only reaches here with nothing left at all.
             raise NoAvailableAction(
                 f"every move on {candidate.reaction_id!r} has already been tried or is "
                 "undefined for it"
@@ -237,7 +274,7 @@ class ProductionV1(QuestionSet):
         if candidate.essential is None:
             missing.append("whether it is essential")
         if candidate.fseof_slope is None:
-            missing.append("whether it rises with product formation")
+            missing.append("whether its flux falls as the product is forced up")
         gap = (
             f" What is still unknown about it: {', and '.join(missing)}."
             if missing and allow_look
@@ -247,16 +284,20 @@ class ProductionV1(QuestionSet):
         return {
             ACTION_KEY: choice_question(
                 (
-                    f'Choose what to do to reaction "{rid}" so that flux through {product} '
-                    f"increases while growth stays at or above {growth_floor} per hour. "
-                    f"Its evidence is the record with id {rid} in the state above.{gap}"
+                    f'Choose what to do to the genes behind reaction "{rid}" so that flux '
+                    f"through {product} increases while growth stays at or above "
+                    f"{growth_floor} per hour. Its evidence is the record with id {rid} in "
+                    f"the state above; a MEASURED line there is what CMM found when it made "
+                    f"that exact move on the current design.{gap}"
                 ),
                 criteria,
             ),
             BENEFIT_KEY: score_question(
                 (
                     f"Rate how much you expect flux through {product} to increase as a "
-                    f'result of the move you just chose for "{rid}".'
+                    f'result of the move you just chose for "{rid}". If its record reports '
+                    "a MEASURED change for that move, grade against that number rather "
+                    "than against what the stoichiometry suggests."
                 ),
                 [
                     "No gain at all, or the cell stops growing.",

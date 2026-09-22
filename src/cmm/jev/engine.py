@@ -27,6 +27,24 @@ questions and a report that quoted only one would mislead:
 ``MOMA``
     The minimal-adjustment state against the wild-type reference. What the strain does
     immediately after the change, before any adaptation.
+
+**Which state MOMA measures from is a choice, and it is the wild type here.** MOMA's premise
+is that a freshly perturbed cell keeps the regulatory setpoints of the cell it was made from,
+so the reference must be the parent strain — and the parent of the design this run produces
+is the wild type, because the design is built and characterised as one strain, not as a
+sequence of strains. The intermediate designs the agent passes through on its way there are
+search positions, not organisms anyone will culture.
+
+The alternative — re-referencing each step to the previous design's flux state — models a
+different experiment: an edit introduced into a strain that has already been grown up. It is
+a real protocol, but it is the wrong one to report here for two reasons. Chaining the
+reference makes each step's MOMA distance describe only the last edit, so a five-edit design
+would look exactly as easy to build as a one-edit design, which is the opposite of what the
+number is for. And it would not be MOMA from the previous *MOMA* state in any case: a strain
+you can make a second edit in is a strain you have cultured, and cultured knockout strains
+move toward the FBA optimum (Fong & Palsson 2004), so the honest parent state would be the
+previous design's pFBA — which is what re-referencing would have to use, and what it would
+then be comparing everything against instead of the organism.
 """
 
 from __future__ import annotations
@@ -67,7 +85,7 @@ from cmm.jev.questions import (
     DEFAULT_QUESTION_SET,
     RISK_KEY,
     TARGET_KEY,
-    NoAvailableAction,
+    available_actions,
     get_question_set,
     research_query,
 )
@@ -107,6 +125,9 @@ TickOutcome = Literal[
     "budget_exhausted",
 ]
 
+#: Reasons a run can stop before playing every round, for the summary to state plainly.
+STOP_REQUESTED = "the run was stopped from the interface"
+
 
 class JevWorkflowError(RuntimeError):
     """Raised when the run cannot proceed on scientific or configuration grounds."""
@@ -131,11 +152,17 @@ class JevConfig:
     filled the design and the rest had nothing left to do, so a three-round run spent five
     steps of a possible thirty-six.
 
-    Two budgets, and they mean different things. ``steps_per_round`` bounds how long one
-    attempt may *play*: every decision costs one step, including an undo and including a scan
-    that changes nothing. ``max_interventions`` bounds how many changes an attempt may carry
-    at once, which is the quantity a wet-lab reader cares about — a design needing twelve
-    edits is not the same proposal as one needing three.
+    Two kinds of budget, and they mean different things. ``steps_per_round`` bounds how long
+    one attempt may *play*: every decision costs one step, including an undo and including a
+    scan that changes nothing. ``max_knockouts`` and ``max_knockdowns`` bound how many edits
+    of each kind an attempt may carry at once, which is the quantity a wet-lab reader cares
+    about — a design needing twelve edits is not the same proposal as one needing three, and
+    six deletions is a different project from six promoter swaps.
+
+    They are counted separately rather than as one total because they cost different things
+    to build, and because one shared cap starved the run: the seeded OptKnock design takes
+    three deletions on its own, so a total of four left exactly one edit for the agent and
+    every round ended within a step or two of adopting it.
     """
 
     model_path: str | Path
@@ -169,10 +196,15 @@ class JevConfig:
     rounds: int = 5
     #: Steps the agent may spend in one round. **Every** decision costs one — an intervention,
     #: an undo, a scan — so this is the length of the game, not a count of edits. The design
-    #: is bounded separately by ``max_interventions``, which is the number a laboratory would
-    #: have to build. A long round is cheap: a step is two calls, about 0.6 s and $0.00016.
+    #: is bounded separately by ``max_knockouts`` and ``max_knockdowns``, which are the
+    #: numbers a laboratory would have to build. A long round is cheap: a step is at most two
+    #: calls, about 0.6 s and $0.00016.
     steps_per_round: int = 40
-    max_interventions: int = 4
+    #: How many gene deletions the design may carry, and how many 50% knockdowns. The
+    #: deletion budget has to clear the seeded strain design (three deletions by default)
+    #: with room to spare, or the agent inherits a full design and has nothing to play.
+    max_knockouts: int = 6
+    max_knockdowns: int = 3
     growth_floor: float = 0.05
     candidate_limit: int = 24
     allow_look_actions: bool = True
@@ -200,11 +232,12 @@ class JevConfig:
     #: it can. A design whose worst case is zero is not a design, however good its pFBA
     #: number looks. Loopless, so it costs one FVA solve.
     measure_guaranteed_product: bool = True
-    #: Recompute, whenever the design changes, what forcing flux through each reaction on the
-    #: board would do to the product. One pFBA per candidate — about a second for a board of
-    #: 24 on ``e_coli_core``, and the single most useful thing on the screen. Turn it off for
-    #: a genome-scale model where a board of solves is not cheap.
-    screen_amplifications: bool = True
+    #: Recompute, whenever the design changes, what deleting and what halving each reaction
+    #: on the board would do to the product. Two pFBA solves per candidate — about two
+    #: seconds for a board of 24 on ``e_coli_core``, and the single most useful thing on the
+    #: screen, because it is the measured consequence of the exact moves the agent may make.
+    #: Turn it off for a genome-scale model where a board of solves is not cheap.
+    screen_interventions: bool = True
 
     # -- the agent ----------------------------------------------------------
     jev_model: str = "typesafe/jev-1.13"
@@ -237,8 +270,15 @@ class JevConfig:
             raise ValueError("rounds must be at least 1")
         if self.steps_per_round < 1:
             raise ValueError("steps_per_round must be at least 1")
+        if self.max_knockouts < 0:
+            raise ValueError("max_knockouts must be non-negative")
+        if self.max_knockdowns < 0:
+            raise ValueError("max_knockdowns must be non-negative")
         if self.max_interventions < 1:
-            raise ValueError("max_interventions must be at least 1")
+            raise ValueError(
+                "max_knockouts and max_knockdowns cannot both be zero: the agent would "
+                "have no move it is allowed to make"
+            )
         if self.growth_floor < 0:
             raise ValueError("growth_floor must be non-negative")
         if self.candidate_limit < 2:
@@ -255,6 +295,22 @@ class JevConfig:
                 "species, and the wrong one returns evidence that is confident and wrong"
             )
         get_question_set(self.question_set)
+
+    @property
+    def max_interventions(self) -> int:
+        """Edits the design may carry in total. Derived: the two budgets are the inputs."""
+
+        return self.max_knockouts + self.max_knockdowns
+
+    def room_for(self, used_knockouts: int, used_knockdowns: int) -> tuple[str, ...]:
+        """Which intervention modes still have budget, in the order the vocabulary lists them."""
+
+        modes = []
+        if used_knockouts < self.max_knockouts:
+            modes.append("knockout")
+        if used_knockdowns < self.max_knockdowns:
+            modes.append("knockdown")
+        return tuple(modes)
 
     @classmethod
     def from_json(cls, path: str | Path) -> "JevConfig":
@@ -283,6 +339,17 @@ class JevConfig:
         )
 
         values = dict(payload)
+        if "max_interventions" in values:
+            raise ValueError(
+                "max_interventions is no longer a setting: deletions and knockdowns are "
+                "budgeted separately. Replace it with max_knockouts and max_knockdowns, "
+                "which say what a laboratory would actually have to build."
+            )
+        if "screen_amplifications" in values:
+            raise ValueError(
+                "screen_amplifications is no longer a setting: the agent cannot amplify. "
+                "Use screen_interventions, which measures deletions and knockdowns instead."
+            )
         values["medium"] = _medium_from_payload(values.get("medium"))
         values["condition"] = _condition_from_payload(values.get("condition"))
         return cls(**values)  # type: ignore[arg-type]
@@ -298,7 +365,10 @@ class JevConfig:
             "brief": self.brief,
             "rounds": self.rounds,
             "steps_per_round": self.steps_per_round,
+            "max_knockouts": self.max_knockouts,
+            "max_knockdowns": self.max_knockdowns,
             "max_interventions": self.max_interventions,
+            "intervention_vocabulary": "knockout, knockdown_50",
             "growth_floor": self.growth_floor,
             "candidate_limit": self.candidate_limit,
             "allow_look_actions": self.allow_look_actions,
@@ -308,7 +378,7 @@ class JevConfig:
             "run_baseline_comparison": self.run_baseline_comparison,
             "measure_cofactor_limits": self.measure_cofactor_limits,
             "measure_guaranteed_product": self.measure_guaranteed_product,
-            "screen_amplifications": self.screen_amplifications,
+            "screen_interventions": self.screen_interventions,
             "run_moma": self.run_moma,
             "jev_model_requested": self.jev_model,
             "question_set": self.question_set,
@@ -565,7 +635,7 @@ class _Board:
     #: somewhere to go back to.
     best_snapshot: tuple[Intervention, ...] = ()
     best_score: float = float("-inf")
-    #: True when the design has changed since the amplification gains were last measured.
+    #: True when the design has changed since the intervention gains were last measured.
     screen_stale: bool = True
     #: reaction id -> the change in product flux measured when that intervention was applied.
     #: Shown next to each active intervention so dead weight is visible: an intervention that
@@ -664,12 +734,19 @@ def run_jev_design(
     *,
     client: JevClient | None = None,
     on_tick: Callable[[TickRecord, Mapping[str, float]], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> JevResult:
     """Run the JEV game loop and, when ``output_dir`` is set, write a run bundle.
 
     ``client`` is injectable so a test can play the whole game against a scripted agent with
     no network. ``on_tick`` is called after every frame with the tick record and the flux
     distribution it produced, which is how the desktop app redraws the flux map mid-round.
+
+    ``should_stop`` is polled once per step, from the thread the loop runs on. A run that is
+    stopped this way still returns everything it played and still reports its best design —
+    stopping is an answer about how long to look, not a reason to throw the answer away. What
+    it does skip is the baseline comparison, which costs an OptKnock solve and is not what
+    someone pressing stop is waiting for; the run says so in its notes.
     """
 
     from cobra.io import read_sbml_model
@@ -791,6 +868,7 @@ def run_jev_design(
     transcript: list[Mapping[str, object]] = []
 
     idle_rounds = 0
+    stopped_by_user = False
     best_product = wild_product
     best_growth = wild_growth
     best_interventions: tuple[Intervention, ...] = ()
@@ -817,6 +895,14 @@ def run_jev_design(
         repeats = 0
 
         for tick_index in range(1, config.steps_per_round + 1):
+            if should_stop is not None and should_stop():
+                notes.append(
+                    f"{STOP_REQUESTED} during round {round_index}, step {tick_index}; "
+                    "everything played up to that point is kept"
+                )
+                stopped_by_user = True
+                stop_run = True
+                break
             if _budget_exhausted(agent, config):
                 notes.append(
                     f"stopped in round {round_index}: the agent budget was reached "
@@ -871,11 +957,13 @@ def run_jev_design(
                 ended_early = True
                 break
 
-            if config.screen_amplifications and board.screen_stale:
-                _run_scan(board, "amplification_screen", candidates, config)
+            if config.screen_interventions and board.screen_stale:
+                _run_scan(board, "intervention_screen", candidates, config)
                 board.screen_stale = False
                 candidates = board.scans.apply(candidates)
 
+            used_knockouts = sum(1 for i in board.interventions if i.mode == "knockout")
+            used_knockdowns = len(board.interventions) - used_knockouts
             state = GameState(
                 product_reaction_id=product,
                 product_flux=current_product,
@@ -926,8 +1014,10 @@ def run_jev_design(
                 round_index=round_index,
                 tick_index=tick_index,
                 ticks_left=config.steps_per_round - tick_index,
-                interventions_used=len(board.interventions),
-                max_interventions=config.max_interventions,
+                knockouts_used=used_knockouts,
+                max_knockouts=config.max_knockouts,
+                knockdowns_used=used_knockdowns,
+                max_knockdowns=config.max_knockdowns,
             )
 
             tick = _play_tick(
@@ -941,6 +1031,7 @@ def run_jev_design(
                 tick_index=tick_index,
                 use_linear_moma=use_linear_moma,
                 transcript=transcript,
+                allowed_modes=config.room_for(used_knockouts, used_knockdowns),
             )
             ticks.append(tick)
             board.history.append(tick.headline())
@@ -1045,7 +1136,12 @@ def run_jev_design(
     final_interventions = tuple(board.interventions)
 
     baselines: tuple["BaselineRow", ...] = ()
-    if config.run_baseline_comparison:
+    if stopped_by_user and config.run_baseline_comparison:
+        notes.append(
+            "the baseline comparison was skipped because the run was stopped; the agent's "
+            "own numbers are complete, but there is nothing here to compare them against"
+        )
+    if config.run_baseline_comparison and not stopped_by_user:
         from cmm.jev.benchmark import compare_with_baselines
 
         # Every method's design is applied by the comparison itself, within its own reverting
@@ -1111,6 +1207,7 @@ def _play_tick(
     tick_index: int,
     use_linear_moma: bool,
     transcript: list[Mapping[str, object]],
+    allowed_modes: tuple[str, ...],
 ) -> TickRecord:
     """Ask, execute, measure. Returns the frame; the caller re-solves and redraws."""
 
@@ -1118,12 +1215,15 @@ def _play_tick(
     allow_undo = bool(board.interventions)
     allow_look = config.allow_look_actions
 
-    room = config.max_interventions - len(board.interventions)
+    # A proven design is all deletions, so it is the deletion budget it has to fit inside.
+    knockout_room = config.max_knockouts - sum(
+        1 for i in board.interventions if i.mode == "knockout"
+    )
     best_design = next(
         (
             design
             for design in board.scans.designs
-            if len(design[1]) <= room
+            if len(design[1]) <= knockout_room
             and not set(design[1]) & {i.reaction_id for i in board.interventions}
         ),
         None,
@@ -1134,7 +1234,7 @@ def _play_tick(
         growth_floor=config.growth_floor,
         allow_undo=allow_undo,
         allow_look=allow_look,
-        design_full=room <= 0,
+        design_full=not allowed_modes,
         best_design=(
             f"{len(board.best_snapshot)} interventions reaching {board.best_score:.4g}"
             if board.best_snapshot
@@ -1281,15 +1381,17 @@ def _play_tick(
     # against the current bounds. Both would spend a tick to arrive back where we are.
     blocked = set(board.failed_moves.get(candidate.reaction_id, ()))
     blocked |= board.scans.completed
-    try:
-        action_questions = question_set.action_question(
-            candidate,
-            product=board.product,
-            growth_floor=config.growth_floor,
-            allow_look=allow_look,
-            exclude=blocked,
-        )
-    except NoAvailableAction as error:
+    offered = available_actions(
+        candidate,
+        allow_look=allow_look,
+        exclude=blocked,
+        allowed_modes=allowed_modes,
+    )
+    benefit: float | None = None
+    risk: float | None = None
+    action_confidence: float | None = None
+
+    if not offered:
         # Nothing is left to try here. Mark the whole reaction spent so the next tick's board
         # is built without it, instead of offering a dead end again.
         for spent in applicable_actions(candidate.reference_flux):
@@ -1297,36 +1399,56 @@ def _play_tick(
         return frame(
             action=None,
             outcome="not_applicable",
-            reason=str(error),
+            reason=(
+                f"every move on {candidate.reaction_id!r} has already been tried, is "
+                "undefined for it, or is out of budget"
+            ),
             product_flux=state.product_flux,
             growth=state.growth,
         )
-    stage2 = agent.decide(
-        {**payload, "selected_reaction": candidate.reaction_id}, action_questions
-    )
-    _record(
-        transcript, round_index, tick_index, "action", candidate.reaction_id, stage2
-    )
-    cost += stage2.cost_usd
-    latency += stage2.latency_s
 
-    action_answer = stage2[ACTION_KEY]
-    action_ranking = action_answer.ranked()
-    action_name = action_answer.choice
-    benefit = _safe_score(stage2, BENEFIT_KEY)
-    risk = _safe_noul(stage2, RISK_KEY)
-    action = ACTION_CATALOGUE.get(action_name)
-    if action is None:  # pragma: no cover - vocabulary is closed
-        return frame(
-            action=action_name,
-            outcome="not_applicable",
-            reason=f"{action_name!r} is not a known move",
-            benefit=benefit,
-            risk=risk,
-            action_confidence=action_answer.confidence,
-            product_flux=state.product_flux,
-            growth=state.growth,
+    if len(offered) == 1:
+        # One option is not a decision. Asking would spend a call and a step to be told the
+        # only thing that could be said, which matters now that the budgets are separate:
+        # once the knockdown budget is gone, a zero-flux reaction has exactly one legal move.
+        action = offered[0]
+        action_ranking = ((action.name, 1.0),)
+    else:
+        action_questions = question_set.action_question(
+            candidate,
+            product=board.product,
+            growth_floor=config.growth_floor,
+            allow_look=allow_look,
+            exclude=blocked,
+            allowed_modes=allowed_modes,
         )
+        stage2 = agent.decide(
+            {**payload, "selected_reaction": candidate.reaction_id}, action_questions
+        )
+        _record(
+            transcript, round_index, tick_index, "action", candidate.reaction_id, stage2
+        )
+        cost += stage2.cost_usd
+        latency += stage2.latency_s
+
+        action_answer = stage2[ACTION_KEY]
+        action_ranking = action_answer.ranked()
+        action_confidence = action_answer.confidence
+        benefit = _safe_score(stage2, BENEFIT_KEY)
+        risk = _safe_noul(stage2, RISK_KEY)
+        resolved = ACTION_CATALOGUE.get(action_answer.choice)
+        if resolved is None:  # pragma: no cover - vocabulary is closed
+            return frame(
+                action=action_answer.choice,
+                outcome="not_applicable",
+                reason=f"{action_answer.choice!r} is not a known move",
+                benefit=benefit,
+                risk=risk,
+                action_confidence=action_confidence,
+                product_flux=state.product_flux,
+                growth=state.growth,
+            )
+        action = resolved
 
     # -- LOOK: run a CMM analysis, change nothing ---------------------------
     if action.kind == "look":
@@ -1338,28 +1460,15 @@ def _play_tick(
             reason=reason,
             benefit=benefit,
             risk=risk,
-            action_confidence=action_answer.confidence,
+            action_confidence=action_confidence,
             product_flux=state.product_flux,
             growth=state.growth,
         )
 
     # -- ACT ----------------------------------------------------------------
-    if len(board.interventions) >= config.max_interventions:
-        # Not recorded as a failure: the move may be fine, there is simply no room for it.
-        return frame(
-            action=action.name,
-            outcome="not_applicable",
-            reason=(
-                f"the design already carries the maximum of {config.max_interventions} "
-                "interventions; withdraw one before adding another"
-            ),
-            benefit=benefit,
-            risk=risk,
-            action_confidence=action_answer.confidence,
-            product_flux=state.product_flux,
-            growth=state.growth,
-        )
-
+    # No budget check here: a move whose budget is spent was never offered, which is the
+    # point of gating the question rather than the answer. The alternative — offering it and
+    # refusing it — was measured, and it cost ten consecutive steps on one run.
     try:
         intervention = build_intervention(
             board.model,
@@ -1375,7 +1484,7 @@ def _play_tick(
             reason=str(error),
             benefit=benefit,
             risk=risk,
-            action_confidence=action_answer.confidence,
+            action_confidence=action_confidence,
             product_flux=state.product_flux,
             growth=state.growth,
         )
@@ -1398,7 +1507,7 @@ def _play_tick(
             intervention=intervention,
             benefit=benefit,
             risk=risk,
-            action_confidence=action_answer.confidence,
+            action_confidence=action_confidence,
             status=solution.status,
             product_flux=state.product_flux,
             growth=state.growth,
@@ -1439,7 +1548,7 @@ def _play_tick(
             intervention=intervention,
             benefit=benefit,
             risk=risk,
-            action_confidence=action_answer.confidence,
+            action_confidence=action_confidence,
             product_flux=state.product_flux,
             growth=state.growth,
         )
@@ -1449,21 +1558,15 @@ def _play_tick(
     board.contribution[intervention.reaction_id] = delta
     if delta > 1e-9:
         verdict = f"product rose by {delta:+.4g}"
-        board.clear_failures()
     elif delta < -1e-9:
         verdict = f"product FELL by {delta:+.4g}"
-        board.clear_failures()
-    elif intervention.mode == "amplification":
-        # The forced flux was met without any of it reaching the product — the network
-        # satisfied the constraint internally, typically through a cycle. Naming this is the
-        # difference between the agent learning something and repeating the move elsewhere.
-        verdict = (
-            "product unchanged: the forced flux was consumed inside the network and none "
-            "of it reached the product"
-        )
-        board.record_failure(candidate.reaction_id, action.name)
     else:
-        verdict = "product unchanged"
+        verdict = (
+            "product unchanged: this edit costs a place in the design and has bought "
+            "nothing so far"
+        )
+    # The move stuck, so the design that every earlier rejection was measured against is
+    # gone, and with it the grounds for the rejection.
     board.clear_failures()
     return frame(
         action=action.name,
@@ -1472,7 +1575,7 @@ def _play_tick(
         intervention=intervention,
         benefit=benefit,
         risk=risk,
-        action_confidence=action_answer.confidence,
+        action_confidence=action_confidence,
         moma=moma,
         product_flux=new_product,
         growth=new_growth,
@@ -1524,9 +1627,9 @@ def _adopt_design(
     reach 9.9 mmol gDW^-1 h^-1 of succinate as a set, while ``ACALD`` alone reaches almost
     nothing — so an agent that judges each move by the product change it causes will abandon
     the design after the first deletion. Offering the set as one move is what makes the
-    deterministic result reachable, and it leaves the interesting question open: whether an
-    amplification on top of a proven design beats the design alone, which is a question the
-    designer itself cannot answer.
+    deterministic result reachable, and it leaves the interesting question open: whether a
+    partial knockdown on top of a proven design beats the design alone, which is a question
+    the designer itself cannot ask, its variables being present-or-absent.
 
     The whole set is reverted together if it turns out infeasible or unviable, because a
     partially applied design is not the thing that was proven.
@@ -1597,15 +1700,15 @@ def _adopt_design(
 
     board.clear_failures()
     # The one thing the designer cannot have considered, stated plainly because it is the
-    # whole remaining opportunity: OptKnock and RobustKnock search deletions only. Without
-    # this line, eight runs out of eight adopted the design and ended the round immediately,
-    # while forcing flux through the glyoxylate shunt on top of it reaches 10.76 against the
-    # design's 9.91.
+    # whole remaining opportunity. Without a line like this, eight runs out of eight adopted
+    # the design and ended the round on the spot.
     note = (
-        f"The active design came from {method}, which searches deletions only — its "
-        "formulation cannot express forcing more flux through a reaction. An amplification "
-        "or a knockdown on top of it is a move it could not have considered, and is the only "
-        "kind of move left that might improve on a proven design."
+        f"The active design came from {method}, whose formulation searches complete "
+        "deletions only: every gene is either present or absent. A knockdown to half of "
+        "wild type is a constraint it cannot express, so a knockdown on top of this design "
+        "is a move it could not have considered, and is the kind of move most likely to "
+        "improve on a proven one. The measured knockdown gains on the board are for the "
+        "design as it now stands, with these deletions applied."
     )
     if note not in board.state_notes:
         board.state_notes.append(note)
@@ -1703,56 +1806,70 @@ def _run_scan(
             lines.append(f"ROOM could not run: {error}")
         return "; ".join(lines) or "neither MOMA nor ROOM could be run on this design"
 
-    if name == "amplification_screen":
-        # One solve per candidate, against the design as it stands. This is CMM answering
-        # the question the agent would otherwise have to guess at — and the guess is
-        # systematically wrong in a way worth naming: on anaerobic succinate the agent
-        # reaches for fumarate reductase, the direct product-forming step, which is already
-        # saturated and buys nothing, while the glyoxylate shunt buys 8.6%.
+    if name == "intervention_screen":
+        # Two solves per candidate, against the design as it stands: what happens if this
+        # reaction is deleted, and what happens if it is capped at half its wild-type flux.
+        # This is CMM answering the question the agent would otherwise guess at, and the
+        # guess is systematically wrong in a way worth naming — which branch competes with
+        # the product depends on the whole network at the current bounds, not on the
+        # reaction's own stoichiometry, and a deletion that pays on the wild type can be
+        # worthless once three other deletions are standing.
+        #
+        # Both moves are measured because the pair is the decision. A reaction whose deletion
+        # is lethal and whose knockdown pays is exactly what the knockdown move exists for,
+        # and screening deletions alone would hide it.
         baseline = _solve(board.model)
         if baseline.status != "optimal":
             return "the screen needs a feasible starting point; the model is not"
         before = float(baseline.fluxes.get(board.product, 0.0))
         measured = 0
-        best: tuple[str, float] | None = None
+        best: tuple[str, str, float] | None = None
         for candidate in candidates:
-            action = (
-                ACTION_CATALOGUE["force_on_low"]
-                if abs(candidate.reference_flux) <= 1e-9
-                else ACTION_CATALOGUE["amplify_2x"]
-            )
-            try:
-                trial = build_intervention(
-                    board.model,
-                    candidate.reaction_id,
-                    action,
-                    reference_flux=candidate.reference_flux,
-                )
-            except ActionNotApplicable:
-                continue
             reaction = board.model.reactions.get_by_id(candidate.reaction_id)
             saved = reaction.bounds
-            reaction.bounds = (trial.lower_bound, trial.upper_bound)
-            solution = _solve(board.model)
-            reaction.bounds = saved
-            if solution.status != "optimal":
-                continue
-            if float(solution.fluxes.get(board.biomass, 0.0)) < config.growth_floor:
-                # Reported as no gain rather than omitted: a move that kills the strain is
-                # not a move, and leaving the row blank would read as "not yet measured".
-                board.scans.amplification_gains[candidate.reaction_id] = 0.0
+            for action_name, store in (
+                ("knockout", board.scans.deletion_gains),
+                ("knockdown_50", board.scans.knockdown_gains),
+            ):
+                try:
+                    trial = build_intervention(
+                        board.model,
+                        candidate.reaction_id,
+                        ACTION_CATALOGUE[action_name],
+                        reference_flux=candidate.reference_flux,
+                    )
+                except ActionNotApplicable:
+                    # A knockdown of a flux that is already zero. Not a gap in the screen:
+                    # the move does not exist, and the agent is never offered it.
+                    continue
+                reaction.bounds = (trial.lower_bound, trial.upper_bound)
+                solution = _solve(board.model)
+                reaction.bounds = saved
+                viable = solution.status == "optimal" and (
+                    float(solution.fluxes.get(board.biomass, 0.0))
+                    >= config.growth_floor
+                )
+                if action_name == "knockout":
+                    # Essentiality comes free with the deletion solve, so the agent never has
+                    # to spend a step on an essentiality scan to learn it.
+                    board.scans.essential[candidate.reaction_id] = not viable
+                if not viable:
+                    # Recorded as no gain rather than omitted: a move that kills the strain is
+                    # not a move, and a blank would read as "not yet measured".
+                    store[candidate.reaction_id] = 0.0
+                    measured += 1
+                    continue
+                gain = float(solution.fluxes.get(board.product, 0.0)) - before
+                store[candidate.reaction_id] = gain
                 measured += 1
-                continue
-            gain = float(solution.fluxes.get(board.product, 0.0)) - before
-            board.scans.amplification_gains[candidate.reaction_id] = gain
-            measured += 1
-            if best is None or gain > best[1]:
-                best = (candidate.reaction_id, gain)
-        if best is None:
-            return f"measured {measured} reactions; none of them raises the product"
+                if best is None or gain > best[2]:
+                    best = (candidate.reaction_id, action_name, gain)
+        board.scans.completed.add("essentiality_scan")
+        if best is None or best[2] <= 1e-9:
+            return f"measured {measured} moves; none of them raises the product"
         return (
-            f"measured {measured} reactions; the best is {best[0]} at {best[1]:+.4g} "
-            "product flux"
+            f"measured {measured} moves; the best is {best[1]} on {best[0]} at "
+            f"{best[2]:+.4g} product flux"
         )
 
     if name == "strain_design_scan":

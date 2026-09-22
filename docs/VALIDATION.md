@@ -441,12 +441,32 @@ is an ordinary CMM solve. What is validated is the loop, not the agent:
 - **Viability is enforced by CMM, not predicted.** A move leaving the model infeasible, or
   growth below `growth_floor`, is reverted and recorded. `tests/test_jev.py` asserts this
   against a scripted agent that repeatedly proposes a lethal knockout.
-- `force_on_*` targets a fraction of the reaction's **loopless** feasible maximum. The plain
-  LP maximum is a loop artifact on `e_coli_core` (`FRD7` returns its 1000 bound through the
-  `FRD7`/`SUCDi` cycle at 10 mmol gDW⁻¹ h⁻¹ glucose uptake) and forcing a fraction of it
-  would be meaningless. Asserted by `test_switching_a_reaction_on_uses_its_loop_free_maximum`.
+- **The move vocabulary is down-regulation only**: `knockout` (bounds forced to zero) and
+  `knockdown_50` (magnitude capped at half the wild-type flux). Both are caps, which is what a
+  gene deletion or a weakened promoter imposes. Amplification was removed because a forced
+  lower bound makes the solver carry a flux by whatever route is cheapest, which is not what
+  raising an enzyme's expression does; an in-silico gain obtained that way overstates what a
+  strain would do. Asserted by `test_nothing_in_the_vocabulary_can_force_flux_up`.
+- **The cost of that restriction is measured, not assumed.** Every comparison carries a
+  `best amplification on top of this design` row: FSEOF ranked on the design being scored, its
+  top ten targets forced one at a time, the best one clearing the growth floor reported. It is
+  excluded from the "best deterministic method" the agent is scored against, because scoring
+  an agent against a move it was forbidden to play is not a comparison. The forced level uses
+  the reaction's **loopless** feasible maximum when it carries no flux: the plain LP maximum
+  is a loop artifact on `e_coli_core` (`FRD7` returns its 1000 bound through the
+  `FRD7`/`SUCDi` cycle at 10 mmol gDW⁻¹ h⁻¹ glucose uptake).
+- **MOMA's reference is the wild-type pFBA state for every design, at every step**, never the
+  previous step's state. MOMA's premise is that a freshly perturbed cell keeps its parent's
+  regulatory setpoints, and the parent of the design a run produces is the wild type — the
+  design is built and characterised as one strain, and its intermediate states are search
+  positions rather than organisms. Chaining the reference would make each step's distance
+  describe only the last edit, so a five-edit design would appear as easy to build as a
+  one-edit design. SC-03 states this in the run's own documentation.
 - Candidates are restricted to reactions carrying a gene association, so a proposal is an
   intervention a laboratory could make rather than a bound edit that only exists in silico.
+- **Knockouts and knockdowns are budgeted separately** (`max_knockouts`, `max_knockdowns`),
+  because they are different things for a laboratory to build and a single shared cap is not
+  a quantity anyone plans against.
 
 **Reproducibility is partial and must be stated as such.** Every CMM solve in a run is
 deterministic. JEV's decisions are not guaranteed to repeat: repeated runs of the same

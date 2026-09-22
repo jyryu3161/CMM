@@ -90,6 +90,9 @@ class JevTabMixin:
         self._jev_frames: list[tuple[object, dict]] = []
         self._jev_canvas = None
         self._jev_toolbar = None
+        self._jev_cost = 0.0
+        self._jev_stop_requested = False
+        self._jev_running = False
 
         controls = QGroupBox("JEV agent — a decision model plays this model")
         # Held so the whole control block can be disabled while a run is in flight.
@@ -111,18 +114,39 @@ class JevTabMixin:
         # cheap (about 0.6 s and $0.00016), so the ceiling is generous and the design is
         # bounded separately by the intervention count next to it.
         self.jev_ticks_spin.setRange(1, 1000)
-        self.jev_ticks_spin.setValue(20)
-        self.jev_targets_spin = QSpinBox()
-        self.jev_targets_spin.setRange(1, 20)
-        self.jev_targets_spin.setValue(4)
+        self.jev_ticks_spin.setValue(40)
         budget_row.addWidget(QLabel("rounds"))
         budget_row.addWidget(self.jev_rounds_spin)
         budget_row.addWidget(QLabel("steps per round"))
         budget_row.addWidget(self.jev_ticks_spin)
-        budget_row.addWidget(QLabel("max interventions"))
-        budget_row.addWidget(self.jev_targets_spin)
         budget_row.addStretch(1)
         form.addRow("Budget:", budget_row)
+
+        # Counted separately because they are different things to build, and because one
+        # shared cap starved the run: the seeded OptKnock design takes three deletions on its
+        # own, so a total of four left the agent a single edit and every round ended a step
+        # or two after adopting it.
+        targets_row = QHBoxLayout()
+        self.jev_knockouts_spin = QSpinBox()
+        self.jev_knockouts_spin.setRange(0, 30)
+        self.jev_knockouts_spin.setValue(6)
+        self.jev_knockouts_spin.setToolTip(
+            "How many genes the design may delete. The seeded OptKnock design uses three of "
+            "these on its own, so leave room above that or the agent inherits a full design."
+        )
+        self.jev_knockdowns_spin = QSpinBox()
+        self.jev_knockdowns_spin.setRange(0, 30)
+        self.jev_knockdowns_spin.setValue(3)
+        self.jev_knockdowns_spin.setToolTip(
+            "How many genes the design may weaken to half their wild-type activity — a "
+            "promoter or RBS change rather than a deletion."
+        )
+        targets_row.addWidget(QLabel("gene knock-outs"))
+        targets_row.addWidget(self.jev_knockouts_spin)
+        targets_row.addWidget(QLabel("gene knock-downs (50%)"))
+        targets_row.addWidget(self.jev_knockdowns_spin)
+        targets_row.addStretch(1)
+        form.addRow("Regulation targets:", targets_row)
 
         limits_row = QHBoxLayout()
         self.jev_growth_spin = QDoubleSpinBox()
@@ -181,9 +205,22 @@ class JevTabMixin:
         web_row.addWidget(self.jev_organism, 1)
         form.addRow("", web_row)
 
+        run_row = QHBoxLayout()
         self.jev_run_btn = QPushButton("Let JEV play")
         self.jev_run_btn.clicked.connect(self.run_jev_agent)
-        form.addRow("", self.jev_run_btn)
+        # Stop lives outside the controls group, because the whole group is disabled while a
+        # run is in flight and a stop button you cannot press is not a stop button.
+        self.jev_stop_btn = QPushButton("Stop")
+        self.jev_stop_btn.setEnabled(False)
+        self.jev_stop_btn.setToolTip(
+            "Finish the current step and stop. Everything played so far is kept and "
+            "summarised; only the baseline comparison is skipped."
+        )
+        self.jev_stop_btn.clicked.connect(self.stop_jev_agent)
+        run_row.addWidget(self.jev_run_btn)
+        run_row.addWidget(self.jev_stop_btn)
+        run_row.addStretch(1)
+        form.addRow("", run_row)
         layout.addWidget(controls)
 
         # Two determinate bars, because a run has two clocks and they answer different
@@ -215,6 +252,21 @@ class JevTabMixin:
             )
         bars.addWidget(self.jev_round_progress, 2)
         bars.addWidget(self.jev_progress, 3)
+        # What the run has spent, live. A decision is about $0.00016, so the number is small
+        # — which is exactly why it is worth showing rather than leaving people to guess at
+        # an order of magnitude they would reasonably assume was larger.
+        self.jev_cost = QLabel("$0.0000")
+        self.jev_cost.setMinimumWidth(150)
+        self.jev_cost.setAlignment(Qt.AlignCenter)
+        self.jev_cost.setToolTip(
+            "OpenRouter spend on this run, summed from what each decision actually cost."
+        )
+        self.jev_cost.setStyleSheet(
+            "QLabel { border: 1px solid #c2ccd6; border-radius: 4px; background: #f2f5f8; "
+            "color: #23313f; font-weight: bold; padding: 4px; }"
+        )
+        self.jev_cost.setMinimumHeight(26)
+        bars.addWidget(self.jev_cost, 1)
         layout.addLayout(bars)
 
         self.jev_summary = QLabel(
@@ -269,6 +321,11 @@ class JevTabMixin:
         self.jev_table.verticalHeader().setVisible(False)
         self.jev_table.setAlternatingRowColors(True)
         self.jev_table.setMinimumWidth(500)
+        self.jev_table.setSelectionBehavior(QTableWidget.SelectRows)
+        # Clicking a move puts that move's flux distribution back on the map. This is also
+        # how you see that a move changed nothing: step through the rows and the picture
+        # holds still, which is the honest answer and not a broken redraw.
+        self.jev_table.itemSelectionChanged.connect(self._show_selected_jev_move)
 
         # What the agent weighed, above what it did. A ``choice`` answer carries a
         # probability for every option it was offered, so each move records a complete
@@ -352,6 +409,8 @@ class JevTabMixin:
         self.jev_table.setRowCount(0)
         self._jev_frames = []
         self._jev_result = None
+        self._jev_cost = 0.0
+        self.jev_cost.setText("$0.0000")
 
     def _update_jev_run_state(self) -> None:
         """Enable the run only when everything it needs is present, and say what is missing."""
@@ -478,6 +537,9 @@ class JevTabMixin:
 
         self.jev_table.setRowCount(0)
         self._jev_frames = []
+        self._jev_cost = 0.0
+        self._jev_stop_requested = False
+        self.jev_cost.setText("$0.0000")
         self.jev_round_progress.setRange(0, self.jev_rounds_spin.value())
         self.jev_round_progress.setValue(0)
         self.jev_round_progress.setFormat(f"round 0 of {self.jev_rounds_spin.value()}")
@@ -503,7 +565,8 @@ class JevTabMixin:
             rounds=self.jev_rounds_spin.value(),
             steps_per_round=self.jev_ticks_spin.value(),
             brief=self.jev_brief.toPlainText(),
-            max_interventions=self.jev_targets_spin.value(),
+            max_knockouts=self.jev_knockouts_spin.value(),
+            max_knockdowns=self.jev_knockdowns_spin.value(),
             growth_floor=self.jev_growth_spin.value(),
             candidate_limit=self.jev_board_spin.value(),
             enable_web_research=self.jev_web_check.isChecked(),
@@ -515,6 +578,10 @@ class JevTabMixin:
             return run_jev_design(
                 config,
                 on_tick=lambda tick, fluxes: bridge.played.emit(tick, dict(fluxes)),
+                # Read from the worker thread, written from the UI thread. A plain flag is
+                # enough: it is set once, never cleared mid-run, and a step's delay in
+                # observing it costs at most one more move.
+                should_stop=lambda: self._jev_stop_requested,
             )
 
         try:
@@ -526,6 +593,21 @@ class JevTabMixin:
 
         self._jev_result = result
         self._show_jev_summary(result)
+
+    def stop_jev_agent(self) -> None:
+        """Ask the running game to stop after the step it is on.
+
+        Not a kill: the worker is inside a solver call for most of its life, and interrupting
+        that would lose the run. The engine checks this flag once per step, so the wait is one
+        move — about a second — and everything played is kept and summarised.
+        """
+
+        if not getattr(self, "_jev_stop_requested", False):
+            self._jev_stop_requested = True
+            self.jev_stop_btn.setEnabled(False)
+            self.jev_stop_btn.setText("Stopping…")
+            self.jev_progress.setFormat("stopping after this step…")
+            self.status_label.setText("Stopping the JEV run after the current step.")
 
     def _run_jev_visibly(self, compute):
         """Run ``compute`` off the UI thread with the window left visible.
@@ -555,8 +637,11 @@ class JevTabMixin:
         loop = QEventLoop()
         worker.finished.connect(loop.quit)
 
+        self._jev_running = True
         self.jev_run_btn.setEnabled(False)
         self.jev_controls.setEnabled(False)
+        self.jev_stop_btn.setEnabled(True)
+        self.jev_stop_btn.setText("Stop")
         QTimer.singleShot(0, thread.start)
         try:
             loop.exec_()
@@ -564,8 +649,11 @@ class JevTabMixin:
             thread.quit()
             thread.wait()
             worker.deleteLater()
+            self._jev_running = False
             self.jev_controls.setEnabled(True)
             self.jev_run_btn.setEnabled(True)
+            self.jev_stop_btn.setEnabled(False)
+            self.jev_stop_btn.setText("Stop")
             played = len(self._jev_frames)
             self.jev_progress.setFormat(
                 f"finished after {played} step{'' if played == 1 else 's'}"
@@ -582,11 +670,41 @@ class JevTabMixin:
     def _on_jev_tick(self, tick, fluxes) -> None:
         """One move arrived from the worker. Append it and redraw the map."""
 
+        previous = self._jev_frames[-1][1] if self._jev_frames else None
         self._jev_frames.append((tick, fluxes))
+        self._jev_cost = getattr(self, "_jev_cost", 0.0) + float(
+            tick.decision_cost_usd or 0.0
+        )
+        self.jev_cost.setText(
+            f"${self._jev_cost:.4f}  ·  {len(self._jev_frames)} steps"
+        )
         self._append_jev_row(tick)
-        self._draw_jev_map(tick, fluxes)
+        self._draw_jev_map(tick, fluxes, previous)
         self._show_jev_thinking(tick)
         self._advance_jev_progress(tick)
+        self.status_label.setText(tick.headline())
+
+    def _show_selected_jev_move(self) -> None:
+        """Put the selected move's flux distribution back on the map.
+
+        Only between runs. While one is playing, the map already follows the newest move, and
+        redrawing from a selection signal meant tearing down and rebuilding the canvas from
+        inside the row insert that raised the signal — which aborted the process, worker
+        thread and all, rather than failing in any way a reader could connect to its cause.
+        """
+
+        if getattr(self, "_jev_running", False):
+            return
+        rows = {index.row() for index in self.jev_table.selectedIndexes()}
+        if len(rows) != 1:
+            return
+        row = rows.pop()
+        if not 0 <= row < len(self._jev_frames):
+            return
+        tick, fluxes = self._jev_frames[row]
+        previous = self._jev_frames[row - 1][1] if row else None
+        self._draw_jev_map(tick, fluxes, previous)
+        self._show_jev_thinking(tick)
         self.status_label.setText(tick.headline())
 
     def _advance_jev_progress(self, tick) -> None:
@@ -613,6 +731,15 @@ class JevTabMixin:
         )
 
     def _append_jev_row(self, tick) -> None:
+        # Silenced while the row goes in: inserting and scrolling both move the selection,
+        # and the selection handler redraws the map.
+        self.jev_table.blockSignals(True)
+        try:
+            self._append_jev_row_unguarded(tick)
+        finally:
+            self.jev_table.blockSignals(False)
+
+    def _append_jev_row_unguarded(self, tick) -> None:
         row = self.jev_table.rowCount()
         self.jev_table.insertRow(row)
         # A move that is not about one reaction has no reaction to name. Repeating the move
@@ -695,7 +822,48 @@ class JevTabMixin:
             self.jev_weights.setCellWidget(row, 1, bar)
         self.jev_weights.resizeRowsToContents()
 
-    def _draw_jev_map(self, tick, fluxes) -> None:
+    @staticmethod
+    def _flux_change(fluxes, previous) -> str:
+        """One sentence on what moved since the previous step, or that nothing did.
+
+        This exists because of a fair question: the map is redrawn after every move, so why
+        does it so often look identical? Because it *is* identical. A scan changes nothing by
+        definition, a move that breached the growth floor was reverted before this frame was
+        taken, and a deletion of a reaction already carrying no flux is a real move with no
+        immediate consequence. Only a move that stuck and mattered redraws differently, and
+        on a typical round that is two or three steps out of twenty.
+
+        Saying so is the fix. A picture that has not changed and does not admit it reads as a
+        broken redraw; the same picture with "no flux changed on this step" under it reads as
+        the result it is.
+        """
+
+        if previous is None:
+            return "Wild-type flux distribution, before any move."
+        moved = sorted(
+            (
+                (abs(value - float(previous.get(rid, 0.0))), rid, value)
+                for rid, value in fluxes.items()
+                if abs(value - float(previous.get(rid, 0.0))) > 1e-6
+            ),
+            reverse=True,
+        )
+        if not moved:
+            return (
+                "No flux changed on this step — the move was a scan, was reverted by the "
+                "rules, or touched a reaction that was already carrying nothing. The map is "
+                "identical to the previous step on purpose."
+            )
+        biggest = ", ".join(
+            f"{rid} {float(previous.get(rid, 0.0)):.3g}\u2192{value:.3g}"
+            for _, rid, value in moved[:3]
+        )
+        return (
+            f"{len(moved)} reaction{'' if len(moved) == 1 else 's'} changed flux on this "
+            f"step. Largest: {biggest}."
+        )
+
+    def _draw_jev_map(self, tick, fluxes, previous=None) -> None:
         """Redraw the flux map for this move, on the curated map when the model has one."""
 
         from cmm.visualization import escher_flux_map, network_flux_map
@@ -729,7 +897,7 @@ class JevTabMixin:
             self.status_label.setText(f"{tick.headline()} (map not drawn: {exc})")
             return
         self._set_figure(self.jev_canvas_holder, "jev", figure)
-        self.jev_map_caption.setText(
+        what = (
             "Curated Escher map of this model, coloured and widened by flux. Metabolite "
             "labels are hidden at this size \u2014 use the magnifier to zoom, or the Flux "
             "Map tab for the full-size figure."
@@ -737,6 +905,7 @@ class JevTabMixin:
             else "Schematic of the highest-flux reactions; no curated Escher map fits this "
             "model. Arrow colour and width both scale with the flux magnitude."
         )
+        self.jev_map_caption.setText(f"{self._flux_change(fluxes, previous)}  {what}")
 
     def _show_jev_summary(self, result) -> None:
         summary = result.summary()
@@ -781,9 +950,12 @@ class JevTabMixin:
             "<br><i>This is a computational hypothesis. The agent's choices are not "
             "guaranteed to repeat on a re-run; the CMM solves behind them are.</i>"
         )
+        self.jev_cost.setText(
+            f"${usage['cost_usd']:.4f}  \u00b7  {usage['calls']} decisions"
+        )
         self.status_label.setText(
             f"JEV run complete: {summary['n_ticks']} moves, best {product} "
-            f"{best:.4g} mmol gDW-1 h-1."
+            f"{best:.4g} mmol gDW-1 h-1, ${usage['cost_usd']:.4f} spent."
         )
 
     def show_jev_progress(self) -> None:

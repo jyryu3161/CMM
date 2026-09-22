@@ -96,7 +96,7 @@ def test_the_map_is_redrawn_once_per_move_while_the_run_is_still_going(
     window.jev_rounds_spin.setValue(1)
     window.jev_ticks_spin.setValue(2)
 
-    client = ScriptedClient([("SUCOAS", "force_on_high")])
+    client = ScriptedClient([("PFL", "knockout")])
     monkeypatch.setattr(
         "cmm.jev.engine.JevClient", lambda **kwargs: client, raising=True
     )
@@ -106,7 +106,10 @@ def test_the_map_is_redrawn_once_per_move_while_the_run_is_still_going(
     monkeypatch.setattr(
         window,
         "_draw_jev_map",
-        lambda tick, fluxes: (redraws.append(tick.target), original(tick, fluxes)),
+        lambda tick, fluxes, previous=None: (
+            redraws.append(tick.target),
+            original(tick, fluxes, previous),
+        ),
     )
 
     window.run_jev_agent()
@@ -134,7 +137,7 @@ def test_the_progress_and_decision_figures_render_after_a_run(
     window.jev_ticks_spin.setValue(2)
     monkeypatch.setattr(
         "cmm.jev.engine.JevClient",
-        lambda **kwargs: ScriptedClient([("SUCOAS", "force_on_high")]),
+        lambda **kwargs: ScriptedClient([("PFL", "knockout")]),
         raising=True,
     )
 
@@ -169,7 +172,7 @@ def test_the_progress_bars_count_rounds_and_steps_separately(
     window.jev_ticks_spin.setValue(3)
     monkeypatch.setattr(
         "cmm.jev.engine.JevClient",
-        lambda **kwargs: ScriptedClient([("SUCOAS", "force_on_high")]),
+        lambda **kwargs: ScriptedClient([("PFL", "knockout")]),
         raising=True,
     )
 
@@ -209,12 +212,17 @@ def test_the_brief_box_reaches_the_run(window, monkeypatch) -> None:
 def test_the_step_ceiling_allows_a_long_game(window) -> None:
     """Steps are decisions, not edits: an undo and a scan each cost one, so the game is long.
 
-    The design stays small — that budget is the spin box next to it, because the number a
-    laboratory has to build is a different quantity from the number of moves played.
+    The design stays small — that budget is the pair of spin boxes below it, because the
+    number a laboratory has to build is a different quantity from the number of moves played,
+    and a deletion is a different quantity from a promoter swap.
     """
 
     assert window.jev_ticks_spin.maximum() >= 1000
-    assert window.jev_targets_spin.maximum() <= 20
+    assert window.jev_knockouts_spin.maximum() <= 30
+    assert window.jev_knockdowns_spin.maximum() <= 30
+    # The seeded strain design takes three deletions on its own, so the default has to leave
+    # the agent something to play with after adopting it.
+    assert window.jev_knockouts_spin.value() > 3
 
 
 def test_the_flux_map_keeps_its_space(window, monkeypatch) -> None:
@@ -233,7 +241,7 @@ def test_the_flux_map_keeps_its_space(window, monkeypatch) -> None:
     window.jev_ticks_spin.setValue(2)
     monkeypatch.setattr(
         "cmm.jev.engine.JevClient",
-        lambda **kwargs: ScriptedClient([("SUCOAS", "force_on_high")]),
+        lambda **kwargs: ScriptedClient([("PFL", "knockout")]),
         raising=True,
     )
 
@@ -286,7 +294,7 @@ def test_the_dashboard_shows_what_the_agent_weighed(window, monkeypatch) -> None
     window.jev_ticks_spin.setValue(1)
     monkeypatch.setattr(
         "cmm.jev.engine.JevClient",
-        lambda **kwargs: ScriptedClient([("SUCOAS", "force_on_high")]),
+        lambda **kwargs: ScriptedClient([("PFL", "knockout")]),
         raising=True,
     )
 
@@ -357,3 +365,101 @@ def test_the_key_menu_items_exist(window) -> None:
     assert "Set API Key…" in labels
     assert "Clear API Key" in labels
     assert "Where is my key?" in labels
+
+
+def test_the_run_reports_what_it_has_spent(window, monkeypatch) -> None:
+    """A decision is about $0.00016, which is exactly why the number is worth showing.
+
+    Left off the screen, the only available estimate is whatever order of magnitude a person
+    assumes an agent loop costs, and that assumption is wrong by three or four of them.
+    """
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    window._refresh_jev_inputs()
+    window._goto_tab("JEV Agent")
+    window.jev_product_combo.setCurrentText("EX_succ_e")
+    window.jev_rounds_spin.setValue(1)
+    window.jev_ticks_spin.setValue(2)
+    monkeypatch.setattr(
+        "cmm.jev.engine.JevClient",
+        lambda **kwargs: ScriptedClient([("PFL", "knockout")]),
+        raising=True,
+    )
+
+    assert window.jev_cost.text() == "$0.0000"
+    window.run_jev_agent()
+
+    text = window.jev_cost.text()
+    assert text.startswith("$")
+    assert "decisions" in text
+
+
+def test_a_step_that_changed_no_flux_says_so(window) -> None:
+    """The answer to "why does the map not move?".
+
+    It does not move because it did not change: a scan changes nothing by definition, a move
+    that breached the growth floor was reverted before the frame was taken, and deleting a
+    reaction already carrying nothing is a real move with no immediate consequence. Only a
+    move that stuck and mattered redraws differently. An unchanged picture that does not
+    admit it reads as a broken redraw.
+    """
+
+    same = {"A": 1.0, "B": -2.0}
+    assert "No flux changed" in window._flux_change(same, dict(same))
+    assert "Wild-type flux distribution" in window._flux_change(same, None)
+
+    moved = window._flux_change({"A": 4.0, "B": -2.0}, same)
+    assert "1 reaction changed flux" in moved
+    assert "A 1→4" in moved
+
+
+def test_stopping_is_asked_for_once_and_keeps_the_run(window, monkeypatch) -> None:
+    """Not a kill: the worker is inside a solver call for most of its life."""
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    window._refresh_jev_inputs()
+    window._goto_tab("JEV Agent")
+
+    assert not window.jev_stop_btn.isEnabled(), "nothing to stop before a run"
+    window._jev_stop_requested = False
+    window.jev_stop_btn.setEnabled(True)
+
+    window.stop_jev_agent()
+    assert window._jev_stop_requested is True
+    assert not window.jev_stop_btn.isEnabled()
+    assert "Stopping" in window.jev_stop_btn.text()
+
+    # Asking twice is not an error and does not undo anything.
+    window.stop_jev_agent()
+    assert window._jev_stop_requested is True
+
+
+def test_a_played_move_can_be_put_back_on_the_map(window, monkeypatch) -> None:
+    """Clicking a row in the move log redraws that move's flux distribution."""
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    window._refresh_jev_inputs()
+    window._goto_tab("JEV Agent")
+    window.jev_product_combo.setCurrentText("EX_succ_e")
+    window.jev_rounds_spin.setValue(1)
+    window.jev_ticks_spin.setValue(3)
+    monkeypatch.setattr(
+        "cmm.jev.engine.JevClient",
+        lambda **kwargs: ScriptedClient([("PFL", "knockout")]),
+        raising=True,
+    )
+    window.run_jev_agent()
+
+    assert window.jev_table.rowCount() >= 2
+    drawn: list[object] = []
+    original = window._draw_jev_map
+    monkeypatch.setattr(
+        window,
+        "_draw_jev_map",
+        lambda tick, fluxes, previous=None: (
+            drawn.append(tick.tick_index),
+            original(tick, fluxes, previous),
+        ),
+    )
+    window.jev_table.selectRow(0)
+    assert drawn == [window._jev_frames[0][0].tick_index]

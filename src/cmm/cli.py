@@ -216,10 +216,13 @@ def _run_jev(args: argparse.Namespace) -> int:
         # result a reader can weigh.
         print("\nSame problem, same growth floor, every design scored the same way:")
         frame = result.baselines_frame()
+        # Width from the data, not a guess: the amplification-headroom row's label is 60
+        # characters and a fixed column wrapped it onto the numbers.
+        width = max(len(str(row["method"])) for _, row in frame.iterrows())
         for _, row in frame.iterrows():
             flag = "" if row["deterministic"] else "  (not deterministic)"
             print(
-                f"  {row['method']:38s} product {row['product_flux']:9.4f}  "
+                f"  {str(row['method']):{width}s}  product {row['product_flux']:9.4f}  "
                 f"growth {row['growth']:7.4f}{flag}"
             )
         print()

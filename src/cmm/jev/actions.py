@@ -6,28 +6,42 @@ the current state and picks one move from a fixed vocabulary, many times over. T
 only be answered with a criterion the caller supplied, so a move that names a reaction the
 model does not contain is not something to validate against; it cannot be expressed.
 
+**The vocabulary is down-regulation only: deletion and partial knockdown.** It used to
+include amplification, both as a multiple of an existing flux and as a ``force_on`` move that
+switched a zero-flux reaction on at a fraction of its feasible maximum, and that is what
+produced this project's best succinate design — 10.7613 against OptKnock's 9.9108. It was
+removed deliberately, and the reason is not that it scored badly:
+
+A lower bound on a reaction is not what over-expression does. Forcing ``v >= x`` tells the
+solver the cell *must* carry that flux, and the solver will satisfy it through whatever route
+is cheapest, including one the enzyme has nothing to do with. Stronger expression of an
+enzyme raises a *capacity*; the cell still decides whether to use it. So the in-silico gain
+from a forced lower bound is an upper bound on an upper bound, and it is the kind of number
+that survives review and fails in a flask. A deletion and a 50% knockdown, by contrast, are
+caps — they say what the cell *cannot* do, which is exactly what deleting a gene or
+weakening its promoter achieves.
+
+Measured cost of the restriction on anaerobic succinate in ``e_coli_core``: the best design
+reachable with deletions and knockdowns is 9.9461 against 10.7613 with amplification, about
+7.6%. The run records that, so the trade is visible rather than implied.
+
 Moves come in three kinds:
 
 ``ACT``
-    Changes the model. Which moves exist for a reaction depends on whether it carries any
-    wild-type flux, because that decides what a change can be measured against:
+    Changes the model.
 
-    *Carrying flux* — ``knockdown_50``, ``amplify_2x``, ``amplify_5x``. These are multiples
-    of the reaction's **wild-type** flux, so "half" and "double" mean the same thing at every
-    point in a run rather than drifting with the current state. There is one knockdown
-    strength, not two: a second, deeper cap mostly bought a second rejection of the same
-    idea, and roughly halving an activity is the level a laboratory can actually aim at with
-    a promoter swap or an RBS change.
+    ``knockout`` forces the flux to exactly zero and is always defined, including on a
+    reaction carrying nothing today — which is not a pointless move: OptKnock's most valuable
+    deletions are escape routes the cell would switch to once the obvious ones are shut.
 
-    *Carrying none* — ``force_on_low``, ``force_on_high``. A reaction at zero has no
-    reference to be a multiple of, and this is not a corner case: in anaerobic
-    ``e_coli_core`` the entire succinate-forming branch sits at zero, so a design that could
-    only scale an existing flux could never switch the product on at all. These moves instead
-    force a fraction of the flux the reaction could carry, found by maximising it under the
-    model's current bounds. They are exploratory by construction — there is no wild-type
-    behaviour to compare against — and are labelled as such.
+    ``knockdown_50`` caps the magnitude at half the reaction's **wild-type** flux, so "half"
+    means the same thing at every point in a run rather than drifting with the current state.
+    It needs a non-zero wild-type flux to be half *of*, and says so rather than quietly
+    becoming something else. There is one knockdown strength, not two: a second, deeper cap
+    mostly bought a second rejection of the same idea, and roughly halving an activity is the
+    level a laboratory can actually aim at with a promoter swap or an RBS change.
 
-    ``knockout`` is offered either way, and ``undo_last`` withdraws the most recent move.
+    ``undo_last`` withdraws the most recent move.
 
 ``LOOK``
     Runs a CMM analysis and feeds the answer back into the next state without changing the
@@ -35,22 +49,21 @@ Moves come in three kinds:
     ``strain_design_scan``. These are what make the loop *operating CMM* rather than only
     editing bounds.
 
-    One measurement is deliberately **not** a move. What forcing flux through each candidate
+    One measurement is deliberately **not** a move. What deleting or halving each candidate
     would do to the product is recomputed by CMM whenever the design changes, because it is a
     fact and not a decision — and because leaving it as a move meant the agent skipped it.
-    Given the cofactor reading it would infer a plausible answer (NADPH is short, so
-    over-express an NADPH-producing enzyme) and act on the inference instead of the
-    measurement. Partial information displacing measurement is worse than no information.
+    Given the cofactor reading it would infer a plausible answer and act on the inference
+    instead of the measurement. Partial information displacing measurement is worse than no
+    information.
 
 ``END``
-    ``end_round`` — stop spending ticks on a round that has nothing left worth doing.
+    ``end_round`` — stop spending steps on a round that has nothing left worth doing.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-import math
 from typing import Literal
 
 from cobra import Model
@@ -58,12 +71,7 @@ from cobra import Model
 from cmm.core.condition import ReactionBound
 
 ActionKind = Literal["act", "look", "end"]
-InterventionMode = Literal["knockout", "knockdown", "amplification"]
-
-#: Fractions of the feasible maximum used by the two ``force_on`` moves. Deliberately well
-#: short of the ceiling: forcing a reaction to its own maximum leaves the rest of the network
-#: no freedom and almost always collapses growth, which teaches the agent nothing.
-FORCE_ON_FRACTIONS = {"force_on_low": 0.25, "force_on_high": 0.6}
+InterventionMode = Literal["knockout", "knockdown"]
 
 #: A flux below this is treated as zero when deciding whether a relative move is defined.
 #: Matches the magnitude at which cobra solutions report numerical noise rather than flux.
@@ -81,10 +89,10 @@ class Action:
     level: float | None = None
 
 
-#: The ACT moves. ``level`` is a multiple of the wild-type flux magnitude: 0.5 means "cap at
-#: half of wild type", 2.0 means "force at least twice wild type". Two knockdown and two
-#: amplification strengths are offered rather than a continuous parameter because JEV picks
-#: from named criteria — a number it cannot type is a number it cannot get wrong.
+#: The ACT moves. ``level`` is a fraction of the wild-type flux magnitude: 0.0 means "hold at
+#: zero", 0.5 means "cap at half of wild type". A named strength rather than a continuous
+#: parameter because JEV picks from named criteria — a number it cannot type is a number it
+#: cannot get wrong.
 ACT_ACTIONS: tuple[Action, ...] = (
     Action(
         name="knockout",
@@ -92,9 +100,10 @@ ACT_ACTIONS: tuple[Action, ...] = (
         mode="knockout",
         level=0.0,
         description=(
-            "Delete this reaction: force its flux to exactly zero. Choose this when the "
-            "reaction competes with the product for carbon or reducing power and the cell "
-            "can grow without it."
+            "Delete the gene or genes behind this reaction: force its flux to exactly zero. "
+            "Choose this when the reaction competes with the product for carbon or reducing "
+            "power and the cell can grow without it, or when it is an alternative route the "
+            "cell would escape down once the obvious ones are shut."
         ),
     ),
     Action(
@@ -103,57 +112,10 @@ ACT_ACTIONS: tuple[Action, ...] = (
         mode="knockdown",
         level=0.5,
         description=(
-            "Cap this reaction at half its wild-type flux. Choose this when the flux should "
-            "be reduced but not removed, because deleting it entirely would stop growth."
-        ),
-    ),
-    Action(
-        name="amplify_2x",
-        kind="act",
-        mode="amplification",
-        level=2.0,
-        description=(
-            "Force at least twice the wild-type flux through this reaction, in the "
-            "direction it already runs. Choose this when the reaction is on the route to "
-            "the product, or supplies a precursor, ATP or redox cofactor that route needs."
-        ),
-    ),
-    Action(
-        name="amplify_5x",
-        kind="act",
-        mode="amplification",
-        level=5.0,
-        description=(
-            "Force at least five times the wild-type flux through this reaction: a hard "
-            "pull. Choose this when doubling was not enough and the step looks rate "
-            "limiting for the product."
-        ),
-    ),
-)
-
-#: Amplification for a reaction that carries no wild-type flux: switch it on. Offered only
-#: when the relative moves are undefined, so the two vocabularies never overlap.
-FORCE_ON_ACTIONS: tuple[Action, ...] = (
-    Action(
-        name="force_on_low",
-        kind="act",
-        mode="amplification",
-        level=FORCE_ON_FRACTIONS["force_on_low"],
-        description=(
-            "This reaction carries no flux at all. Switch it on at a quarter of the most it "
-            "could carry. Choose this to open a pathway that is currently unused, when a "
-            "gentler start is safer for growth."
-        ),
-    ),
-    Action(
-        name="force_on_high",
-        kind="act",
-        mode="amplification",
-        level=FORCE_ON_FRACTIONS["force_on_high"],
-        description=(
-            "This reaction carries no flux at all. Switch it on hard, at around 60% of the "
-            "most it could carry. Choose this when the reaction is on the direct route to "
-            "the product and the pathway needs to be opened decisively."
+            "Weaken the gene or genes behind this reaction so it carries at most half its "
+            "wild-type flux — a promoter swap or an RBS change rather than a deletion. "
+            "Choose this when the flux should be reduced but not removed, because deleting "
+            "it entirely would stop growth or cost more product than it frees."
         ),
     ),
 )
@@ -165,8 +127,10 @@ LOOK_ACTIONS: tuple[Action, ...] = (
         kind="look",
         description=(
             "Do not change anything yet. Run an FSEOF scan, which forces product formation "
-            "up in steps and reports which reactions increase with it. Choose this when you "
-            "need to know which reactions pull the product before committing a move."
+            "up in steps and reports which reactions rise and which fall with it. A reaction "
+            "whose flux FALLS as the product is forced up is one the product pathway does "
+            "not need, and is therefore a candidate for deletion or knockdown. Choose this "
+            "when you need to know which fluxes compete with the product."
         ),
     ),
     Action(
@@ -227,8 +191,8 @@ ADOPT_ACTION = Action(
         "Apply, in one move, the complete set of deletions the strain designer proved best. "
         "Choose this when the designer has found a design and you want it as the base to "
         "build on. Its deletions only pay off together: applied one at a time each looks "
-        "worthless, which is why they are offered as a single move. It uses one place in the "
-        "design per deletion."
+        "worthless, which is why they are offered as a single move. It uses one deletion "
+        "from the knockout budget per reaction."
     ),
 )
 
@@ -254,21 +218,15 @@ UNDO_ACTION = Action(
 #: The weaker version of a move, for when the stronger one was rejected for being too much.
 #: A move turned down because it dropped growth below the floor has an obvious next thing to
 #: try — the same move, gentler — and the agent will not find it on its own: watching a run,
-#: ``force_on_high`` on the glyoxylate shunt was refused on the growth floor and the agent
-#: moved to a different reaction entirely, leaving 8% of product on the table that
-#: ``force_on_low`` on that same reaction would have collected.
-GENTLER_ALTERNATIVE: Mapping[str, str] = {
-    "force_on_high": "force_on_low",
-    "amplify_5x": "amplify_2x",
-    "knockout": "knockdown_50",
-}
+#: a refused move sent it to a different reaction entirely, leaving on the table what the
+#: gentler version of the same move would have collected.
+GENTLER_ALTERNATIVE: Mapping[str, str] = {"knockout": "knockdown_50"}
 
 #: Every action by name, for resolving an answer back to its definition.
 ACTION_CATALOGUE: Mapping[str, Action] = {
     action.name: action
     for action in (
         *ACT_ACTIONS,
-        *FORCE_ON_ACTIONS,
         *LOOK_ACTIONS,
         END_ACTION,
         UNDO_ACTION,
@@ -282,13 +240,9 @@ ACTION_CATALOGUE: Mapping[str, Action] = {
 class Intervention:
     """One applied change to one reaction, expressed relative to its wild-type flux.
 
-    ``reference_flux`` is the reaction's flux in the round-0 wild-type pFBA state. Every
-    relative move is defined against it rather than against the current state, so "half" does
-    not drift as a run accumulates interventions.
-
-    ``clamped`` records that the requested magnitude exceeded what the reaction's own bounds
-    allow, and the move was applied at that ceiling instead. A clamped amplification is still
-    a real change; reporting it as if the full multiple had been applied would overstate it.
+    ``reference_flux`` is the reaction's flux in the round-0 wild-type pFBA state. The
+    knockdown is defined against it rather than against the current state, so "half" does not
+    drift as a run accumulates interventions.
     """
 
     reaction_id: str
@@ -298,11 +252,10 @@ class Intervention:
     lower_bound: float
     upper_bound: float
     action_name: str
-    clamped: bool = False
-    #: True for a ``force_on`` move, where ``level`` is a fraction of the reaction's feasible
-    #: maximum rather than a multiple of a wild-type flux. A reader comparing two rows needs
-    #: to know that the two numbers are not the same kind of quantity.
-    exploratory: bool = False
+    #: The genes behind the reaction, because these moves are gene edits: a knockout is a
+    #: deletion of these genes and a knockdown is a weakening of them. A design row naming
+    #: only a reaction id is a row a wet-lab reader cannot act on.
+    genes: tuple[str, ...] = ()
 
     def to_reaction_bound(self) -> ReactionBound:
         """The change as the :class:`~cmm.core.condition.ReactionBound` CMM already applies."""
@@ -316,23 +269,12 @@ class Intervention:
     def describe(self) -> str:
         """A one-line human summary, used in the state history and in report tables."""
 
+        genes = f" [{', '.join(self.genes)}]" if self.genes else ""
         if self.mode == "knockout":
-            return f"{self.reaction_id}: knockout (flux forced to 0)"
-        if self.mode == "knockdown":
-            return (
-                f"{self.reaction_id}: knockdown to {self.level:.0%} of wild type "
-                f"(|v| ≤ {abs(self.level * self.reference_flux):.4g})"
-            )
-        suffix = " (clamped at the reaction's own bound)" if self.clamped else ""
-        if self.exploratory:
-            forced = self.lower_bound if self.lower_bound > 0 else self.upper_bound
-            return (
-                f"{self.reaction_id}: switched on from zero to {self.level:.0%} of its "
-                f"loop-free maximum (|v| \u2265 {abs(forced):.4g}){suffix}"
-            )
+            return f"{self.reaction_id}{genes}: knockout (flux forced to 0)"
         return (
-            f"{self.reaction_id}: amplification to {self.level:g}x wild type "
-            f"(|v| ≥ {abs(self.level * self.reference_flux):.4g}){suffix}"
+            f"{self.reaction_id}{genes}: knockdown to {self.level:.0%} of wild type "
+            f"(|v| ≤ {abs(self.level * self.reference_flux):.4g})"
         )
 
     def to_record(self) -> dict[str, object]:
@@ -340,14 +282,13 @@ class Intervention:
 
         return {
             "reaction_id": self.reaction_id,
+            "genes": ";".join(self.genes),
             "mode": self.mode,
             "action": self.action_name,
             "level": self.level,
             "reference_flux": self.reference_flux,
             "lower_bound": self.lower_bound,
             "upper_bound": self.upper_bound,
-            "clamped": self.clamped,
-            "exploratory": self.exploratory,
         }
 
 
@@ -360,56 +301,16 @@ class ActionNotApplicable(ValueError):
     """
 
 
-def feasible_extreme(model: Model, reaction_id: str) -> tuple[float, float]:
-    """The largest negative and positive flux this reaction can carry, free of loops.
-
-    Used only to give a ``force_on`` move something to be a fraction of, for a reaction whose
-    wild-type flux is zero.
-
-    **The loopless constraint is not optional here.** A plain LP maximisation of ``FRD7`` on
-    anaerobic ``e_coli_core`` returns 1000 — the bound, reached through the thermodynamically
-    infeasible ``FRD7``/``SUCDi`` cycle — on a model taking up 10 mmol gDW^-1 h^-1 of glucose.
-    Taking 60% of that would force a physically meaningless flux and hand the solver a futile
-    cycle to satisfy it with. The loopless range gives 13.64 instead, and costs less time than
-    the plain one (20 ms against 39 ms on this model) because the tighter problem solves
-    faster.
-
-    If the loopless solve is unavailable the plain range is used and the caller is told, via
-    the returned flag, that the number may include a loop.
-    """
-
-    from cmm.core.simulation import fva
-
-    try:
-        ranges = fva(
-            model,
-            reactions=[reaction_id],
-            fraction_of_optimum=0.0,
-            loopless="fastSNP",
-            processes=1,
-        )
-    except (
-        Exception
-    ):  # pragma: no cover - solver-specific; the plain range still bounds it
-        ranges = fva(
-            model, reactions=[reaction_id], fraction_of_optimum=0.0, processes=1
-        )
-    flux_range = ranges[reaction_id]
-    return float(flux_range.minimum), float(flux_range.maximum)
-
-
 def build_intervention(
     model: Model, reaction_id: str, action: Action, reference_flux: float
 ) -> Intervention:
     """Turn a chosen ACT move on a chosen reaction into concrete bounds.
 
-    A relative move (``knockdown_*``, ``amplify_*``) needs a non-zero wild-type flux to be
-    relative *to*, and raises :class:`ActionNotApplicable` without one rather than quietly
-    becoming something else. A ``force_on`` move is the opposite: it exists only for a
-    reaction at zero, and is measured against what the reaction could carry instead.
-
-    A knockout is always defined, including on a zero-flux reaction — where it is honestly a
-    no-op, which the engine's own re-solve will show.
+    A knockdown needs a non-zero wild-type flux to be half *of*, and raises
+    :class:`ActionNotApplicable` without one rather than quietly becoming something else. A
+    knockout is always defined, including on a zero-flux reaction — where it changes nothing
+    today, which the engine's own re-solve will show, but closes a route the cell could
+    otherwise escape down once another deletion lands.
     """
 
     if action.mode is None:
@@ -417,10 +318,10 @@ def build_intervention(
             f"{action.name!r} is a {action.kind} move and does not change a reaction"
         )
     reaction = model.reactions.get_by_id(reaction_id)
+    genes = tuple(sorted(gene.id for gene in reaction.genes))
     lower, upper = float(reaction.lower_bound), float(reaction.upper_bound)
     reference = float(reference_flux)
     level = float(action.level if action.level is not None else 0.0)
-    carries_flux = abs(reference) > FLUX_EPSILON
 
     if action.mode == "knockout":
         return Intervention(
@@ -431,124 +332,38 @@ def build_intervention(
             lower_bound=0.0,
             upper_bound=0.0,
             action_name=action.name,
+            genes=genes,
         )
 
-    if action.name in FORCE_ON_FRACTIONS:
-        if carries_flux:
-            raise ActionNotApplicable(
-                f"{action.name!r} switches on a reaction that carries nothing, but "
-                f"{reaction_id!r} already carries {reference:.4g}; use an amplify move"
-            )
-        return _force_on(model, reaction_id, action, level, lower, upper)
-
-    if not carries_flux:
+    if abs(reference) <= FLUX_EPSILON:
         raise ActionNotApplicable(
             f"{action.name!r} is relative to the wild-type flux of {reaction_id!r}, "
-            f"which is {reference:.3g}: there is nothing to scale"
+            f"which is {reference:.3g}: there is nothing to halve"
         )
 
-    if action.mode == "knockdown":
-        cap = abs(level * reference)
-        # Cap the magnitude without opening a direction the reaction did not already have.
-        new_lower = max(lower, -cap)
-        new_upper = min(upper, cap)
-        return Intervention(
-            reaction_id=reaction_id,
-            mode="knockdown",
-            level=level,
-            reference_flux=reference,
-            lower_bound=new_lower,
-            upper_bound=new_upper,
-            action_name=action.name,
-        )
-
-    # Amplification: push the flux away from zero in the direction it already runs, by
-    # raising the near-zero side of the interval. The far side is left alone so the solver
-    # keeps the freedom to go further than asked.
-    target = level * reference
-    clamped = False
-    if reference > 0:
-        if target > upper:
-            target, clamped = upper, True
-        new_lower, new_upper = target, upper
-    else:
-        if target < lower:
-            target, clamped = lower, True
-        new_lower, new_upper = lower, target
-
-    if not math.isfinite(new_lower) or not math.isfinite(new_upper):
-        raise ActionNotApplicable(
-            f"amplifying {reaction_id!r} needs finite bounds; it has ({lower}, {upper})"
-        )
+    cap = abs(level * reference)
+    # Cap the magnitude without opening a direction the reaction did not already have.
     return Intervention(
         reaction_id=reaction_id,
-        mode="amplification",
+        mode="knockdown",
         level=level,
         reference_flux=reference,
-        lower_bound=new_lower,
-        upper_bound=new_upper,
+        lower_bound=max(lower, -cap),
+        upper_bound=min(upper, cap),
         action_name=action.name,
-        clamped=clamped,
-    )
-
-
-def _force_on(
-    model: Model,
-    reaction_id: str,
-    action: Action,
-    fraction: float,
-    lower: float,
-    upper: float,
-) -> Intervention:
-    """Switch on a reaction that carries no flux, at a fraction of what it could carry.
-
-    The direction is chosen by which way the reaction can run further. A reaction that cannot
-    carry flux in either direction cannot be switched on at all, and says so rather than
-    being applied as a bound that changes nothing.
-    """
-
-    reachable_low, reachable_high = feasible_extreme(model, reaction_id)
-    forward, reverse = max(reachable_high, 0.0), min(reachable_low, 0.0)
-    if max(forward, -reverse) <= FLUX_EPSILON:
-        raise ActionNotApplicable(
-            f"{reaction_id!r} cannot carry flux in either direction under the current "
-            "bounds, so there is nothing to switch on"
-        )
-
-    if forward >= -reverse:
-        target = min(fraction * forward, upper)
-        new_lower, new_upper = target, upper
-    else:
-        target = max(fraction * reverse, lower)
-        new_lower, new_upper = lower, target
-
-    if new_lower > new_upper:  # pragma: no cover - clamped above
-        raise ActionNotApplicable(
-            f"switching {reaction_id!r} on is outside its bounds ({lower:.4g}, {upper:.4g})"
-        )
-    return Intervention(
-        reaction_id=reaction_id,
-        mode="amplification",
-        level=fraction,
-        reference_flux=0.0,
-        lower_bound=new_lower,
-        upper_bound=new_upper,
-        action_name=action.name,
-        exploratory=True,
+        genes=genes,
     )
 
 
 def applicable_actions(reference_flux: float) -> tuple[Action, ...]:
     """The ACT moves that are defined for a reaction with this wild-type flux.
 
-    The two vocabularies never overlap: a reaction carrying flux is offered the relative
-    moves, a reaction at zero is offered the ``force_on`` moves, and both are offered a
-    knockout. Offering a move that cannot be applied would waste a tick and teach the agent
-    nothing, so the list is filtered before the question is built rather than after it is
-    answered.
+    A knockout is always defined. A knockdown is not defined for a reaction carrying nothing,
+    because there is no flux for it to be half of. Offering a move that cannot be applied
+    would waste a step and teach the agent nothing, so the list is filtered before the
+    question is built rather than after it is answered.
     """
 
-    knockout = tuple(action for action in ACT_ACTIONS if action.mode == "knockout")
     if abs(float(reference_flux)) <= FLUX_EPSILON:
-        return knockout + FORCE_ON_ACTIONS
+        return tuple(action for action in ACT_ACTIONS if action.mode == "knockout")
     return ACT_ACTIONS

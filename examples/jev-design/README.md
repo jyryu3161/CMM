@@ -16,12 +16,18 @@ uv run --frozen --all-extras cmm jev-design --config examples/jev-design/config.
 a second copy. Moves print as they are played:
 
 ```
-R1T1 force_on_high on SUCCt2_2 → product 0, growth 0.08467 (product unchanged: the forced
-     flux was consumed inside the network and none of it reached the product)
-R1T2 force_on_high on FRD7 → product 0, growth 0.08467 (...)
-R1T5 force_on_high on FUM reverted: growth would fall to 0.03387 per hour, below the floor
-R1T6 force_on_low on FUM → product 1.911, growth 0.0635 (product rose by +1.911)
+R1T8 knockout on D_LACt2 → product 9.381, growth 0.08559
+R1T9 JEV ended the round
+R2T1 knockout on PFL → product 0.6781, growth 0.18
+R2T2 restore_best_design on restore_best_design → product 9.381, growth 0.08559
+R2T3 knockdown_50 on PFL → product 9.423, growth 0.07983
+R3T1 adopt_best_design on adopt_best_design → product 9.911, growth 0.09065
+R3T2 knockdown_50 on ACKr → product 9.946, growth 0.05472
 ```
+
+Every round starts again from the wild type — round 2 opens on `PFL` at 0.678, not on round
+1's 9.381 — and carries forward only the record of what earlier rounds reached, which is why
+`restore_best_design` exists.
 
 ## What it is measured against
 
@@ -33,15 +39,26 @@ applied and solved the same way, and prints the table:
   best single gene deletion (MOMA-L2)    product    0.2114  growth  0.1646
   OptKnock                               product    9.9108  growth  0.0906
   RobustKnock                            product    9.9108  growth  0.0906
-  JEV agent                              product   10.7613  growth  0.0680  (not deterministic)
+  best amplification on top of this design (outside the vocabulary)
+                                         product   10.0387  growth  0.0532
+  JEV agent                              product    9.9461  growth  0.0547  (not deterministic)
 ```
 
 Read it honestly. A single gene deletion cannot solve this problem — the best of 71 reaches
 0.211. OptKnock proves 9.911 in under a second, and an agent searching on its own does not
 match it: the winning design deletes `LDH_D` and `THD2`, which carry no flux in the wild type,
 and a board built from where the flux is today cannot see them. What the agent adds is the
-move OptKnock's formulation cannot express — forcing flux through the glyoxylate shunt on top
-of OptKnock's own design, for 10.761 at a real cost in growth (0.068 against 0.091).
+move OptKnock's formulation cannot express — a **partial** knockdown, its own variables being
+present-or-absent. Halving acetate kinase on top of OptKnock's design takes 9.911 to 9.946,
+at a cost in growth (0.055 against 0.091). That +0.4% is the whole margin, and it is an
+honest one: an exhaustive screen of every deletion and every 50% knockdown on top of that
+design reaches the same 9.9461, so the agent found the best its vocabulary allows.
+
+The `best amplification` row is deliberately a move the agent may **not** make. Forcing flux
+through a reaction is not what over-expression does to a cell, so it is excluded from the
+vocabulary — and the row prices that decision in every run rather than leaving it as an
+argument. It is measured on the design being scored, not on the wild type, because on the
+wild type FSEOF's top amplification target for succinate buys nothing at all.
 
 Over eight runs of this configuration: all eight reached 10.761, in six steps and five
 seconds each. That is one problem on one small model, and it is not a claim about yours.

@@ -44,9 +44,15 @@ the design and the rest had nothing left to do, so a three-round run spent five 
 possible thirty-six.
 
 A **step** is one decision, and every decision costs one: an intervention, an undo, a scan
-that changes nothing. `max_interventions` is a different budget entirely — how many changes
-one attempt may carry at once, which is the number a laboratory would have to build. A long
-game and a small design is the usual combination, because steps are cheap and edits are not.
+that changes nothing. `max_knockouts` and `max_knockdowns` are a different budget entirely —
+how many edits of each kind one attempt may carry at once, which is what a laboratory would
+have to build. A long game and a small design is the usual combination, because steps are
+cheap and edits are not.
+
+The two are counted separately because they cost different things to build, and because one
+shared cap starved the run: the seeded OptKnock design takes three deletions on its own, so a
+total of four left the agent exactly one edit and every round ended a step or two after
+adopting it.
 
 There is **no substrate to configure.** The yield is quoted per whatever carbon source the
 condition actually feeds the model, which the wild-type solve already says. Naming it
@@ -83,7 +89,8 @@ Per candidate reaction, all computed by CMM:
 | essential (after `essentiality_scan`) | whether deletion is survivable |
 | FSEOF slope (after `fseof_scan`) | whether the reaction rises with product formation |
 | literature (only with `enable_web_research`) | published precedent, and the **cost** the model cannot see; data pasted into a record, never an instruction |
-| measured amplification gain (after `amplification_screen`) | what forcing flux through it actually does to the product, solved rather than guessed |
+| **measured deletion gain, measured knockdown gain** | what deleting it and what halving it actually do to the product on the design as it stands, solved rather than guessed — recomputed automatically whenever the design changes |
+| genes | the moves are gene edits, and a brief that names `ldhA` has to be connectable to a reaction on the board |
 
 Plus:
 
@@ -149,12 +156,12 @@ gene to delete or over-express.
 
 ## The moves
 
+The vocabulary is **down-regulation only**: delete a gene, or weaken it to half.
+
 | Move | Meaning |
 |---|---|
-| `knockout` | flux forced to zero |
-| `knockdown_50`, `knockdown_25` | capped at that fraction of the **wild-type** flux |
-| `amplify_2x`, `amplify_5x` | at least that multiple of the wild-type flux, direction preserved |
-| `force_on_low`, `force_on_high` | for a reaction carrying **no** wild-type flux: 25% or 60% of its loop-free maximum |
+| `knockout` | delete the reaction's genes: flux forced to zero |
+| `knockdown_50` | weaken them: capped at half the **wild-type** flux magnitude |
 | `undo_last` | withdraw the most recent intervention |
 | `fseof_scan`, `essentiality_scan`, `envelope_probe` | run a CMM analysis; the model is unchanged |
 | `state_distance_check` | MOMA and ROOM on the current design: how far the cell has to move, and how many reactions have to change |
@@ -167,28 +174,89 @@ There is **one knockdown strength**, not two. A second, deeper cap mostly bought
 rejection of the same idea, and roughly halving an activity is the level a promoter swap or an
 RBS change can actually aim at.
 
-One measurement is deliberately **not** a move. What forcing flux through each candidate would
-do to the product is recomputed whenever the design changes, because it is a fact and not a
-decision. Left as a move the agent could choose, it was skipped: given the cofactor reading it
-would infer a plausible answer — NADPH is short, so over-express an NADPH-producing enzyme —
-and act on the inference instead of the measurement. Partial information displacing
-measurement is worse than no information.
+A `knockdown_50` needs a non-zero wild-type flux to be half of, and is not offered without
+one. A `knockout` is always offered, including on a reaction carrying nothing today — which is
+not a pointless move: OptKnock's most valuable deletions close routes the cell would only
+switch to once the obvious ones are shut.
+
+### Why there is no amplification
+
+The vocabulary used to include `amplify_2x`, `amplify_5x` and a `force_on` move that switched
+a zero-flux reaction on at a fraction of its feasible maximum, and that is what produced this
+project's best succinate design: **10.7613** against OptKnock's 9.9108. It was removed anyway.
+
+A lower bound on a reaction is not what over-expression does. Forcing `v ≥ x` tells the solver
+the cell **must** carry that flux, and the solver will satisfy it by whatever route is
+cheapest — including one the enzyme has nothing to do with. Stronger expression of an enzyme
+raises a *capacity*; the cell still decides whether to use it. The in-silico gain from a
+forced lower bound is therefore an upper bound on an upper bound, and it is the kind of number
+that survives review and fails in a flask. A deletion and a knockdown are caps: they say what
+the cell **cannot** do, which is what deleting a gene or weakening its promoter achieves.
+
+The restriction costs product, and every run prices it rather than arguing about it. The
+baseline table carries a
+`best amplification on top of this design (outside the vocabulary)` row: FSEOF is ranked on
+the design being scored, its top ten targets are forced one at a time, and the best one that
+still clears the growth floor is reported. The verdict excludes that row from "best
+deterministic method" — scoring the agent against a move it was forbidden to play is not a
+comparison — and names it in the sentence instead.
+
+It is measured per run, not quoted as a constant, because it is not one. Ranked on the wild
+type, FSEOF's top amplification target for anaerobic succinate buys **nothing**. Ranked on a
+design that already deletes `ACALD`, `D_LACt2` and `THD2`, the same method puts the glyoxylate
+shunt fourth and forcing it reaches **10.76** — but at a growth rate of 0.041, so at a floor
+of 0.05 that move does not exist, and the best one that does reaches **10.04** against the
+design's 9.95. One design, three defensible numbers; a headline percentage would have been
+true of one of them.
+
+### The screen: a measurement, not a move
+
+One measurement is deliberately **not** a move. What deleting and what halving each candidate
+would do to the product is recomputed whenever the design changes — two pFBA solves per
+candidate, about two seconds for a board of 24 on `e_coli_core` — because it is a fact and not
+a decision. Left as a move the agent could choose, it was skipped: given the cofactor reading
+it would infer a plausible answer and act on the inference instead of the measurement. Partial
+information displacing measurement is worse than no information.
+
+Both moves are measured because the pair is the decision: a reaction whose deletion is lethal
+and whose knockdown pays is exactly what the knockdown exists for, and screening deletions
+alone would hide it. Essentiality comes free with the deletion solve, so `essentiality_scan`
+is withheld once the screen has run — its answer is already on the board.
 
 A move refused for dropping growth below the floor says **"too strong, not wrong"** when a
-gentler version of it is still available on that reaction. Without that line, a refused
-`force_on_high` on the glyoxylate shunt sent the agent to a different reaction and left behind
-the 8% that `force_on_low` on the same one collects.
+gentler version of it is still available on that reaction. There is exactly one such pair,
+`knockout → knockdown_50`, and it is the one that matters: a gene the cell cannot live without
+can very often live at half.
 
-The relative moves and the `force_on` moves are offered to disjoint sets of reactions, so no
-move ever means two things.
+### Which state MOMA measures from
 
-### Why `force_on` uses a loop-free maximum
+MOMA's reference here is the **wild type**, for every design at every step, and that is a
+choice worth stating because the loop makes its edits one at a time and the obvious
+alternative is to re-reference each step to the design before it.
 
-A plain LP maximisation of `FRD7` on anaerobic `e_coli_core` returns its 1000 bound, reached
-through the thermodynamically infeasible `FRD7`/`SUCDi` cycle, on a model taking up
-10 mmol gDW⁻¹ h⁻¹ of glucose. Sixty per cent of that would be a physically meaningless target
-the solver would satisfy with a futile cycle. The loopless range gives 13.6, and costs less
-time than the plain one because the tighter problem solves faster.
+MOMA's premise ([Segrè et al. 2002](https://www.pnas.org/doi/full/10.1073/pnas.232349399)) is
+that a freshly perturbed cell keeps the regulatory setpoints of the cell it was made from, so
+the reference must be the *parent strain*. The parent of the design this run produces is the
+wild type: the design is built and characterised as one strain, and the intermediate designs
+the agent passes through on the way are search positions, not organisms anyone will culture.
+The published convention agrees — epistasis maps built with MOMA reference single and double
+mutants alike to the wild type, not each single mutant to its own parent.
+
+Re-referencing each step to the previous design models a different experiment — an edit
+introduced into a strain that has already been grown up — and it is a real protocol. It is
+still the wrong number to report here, for two reasons:
+
+- **It destroys the quantity.** Chained, each step's MOMA distance describes only the last
+  edit, so a five-edit design looks exactly as easy to build as a one-edit design. The whole
+  point of the number is that it does not.
+- **It would not be MOMA-from-MOMA in any case.** A strain you can make a second edit in is a
+  strain you have cultured, and cultured knockout strains move *away* from the MOMA state
+  toward the FBA optimum — Fong & Palsson evolved knockout strains to within 10% of the
+  predicted optimum in 38 of 50 cases. So the honest parent state would be the previous
+  design's **pFBA**, which is the quantity the loop already reports as the score.
+
+If you want the sequential reading, it is the difference between consecutive `product_flux`
+rows in `02_game/ticks.csv`; the `moma_*` columns are deliberately not that.
 
 ## Reading a result
 
@@ -196,7 +264,7 @@ time than the plain one because the tighter problem solves faster.
 flux at the **pFBA** optimum of the best design that held the growth floor — the adapted
 strain, and the right score, because a design that only pays off if the cell chooses to make
 the product is not a design. `moma_product_flux` in `02_game/ticks.csv` is the unadapted
-state immediately after the change.
+state immediately after the change, against the wild type.
 
 Read these together with the tick table:
 
@@ -223,9 +291,10 @@ On the shipped anaerobic succinate example:
 | Best single gene deletion, MOMA-L2, 71 genes | 0.211 | 0.165 | 3.4 s | yes |
 | **OptKnock**, 3 knockouts | **9.911** | 0.091 | 0.8 s | yes |
 | **RobustKnock**, 3 knockouts | **9.911** | 0.091 | 0.9 s | yes |
-| **JEV agent**, 4 interventions | **10.761** | 0.068 | 7 s, $0.002 | **no** |
+| **JEV agent**, 3 deletions + 1 knockdown | **9.946** | 0.055 | 29 steps, $0.009 | **no** |
+| *Best amplification on top of that design* | *10.039* | *0.053* | — | *outside the vocabulary* |
 
-Read this carefully, because the obvious reading is wrong in both directions.
+Read this carefully, because the obvious reading is wrong in several directions.
 
 **A single gene deletion cannot solve this problem at all.** The best of 71 reaches 0.211.
 Anaerobic succinate needs several routes closed at once, and no single-deletion screen —
@@ -238,33 +307,36 @@ neither of which carries any flux in the wild type. They are escape routes the c
 switch to once the obvious ones are shut, and a board built from where the flux is *today*
 cannot see them. No amount of play fixes that; it is a blindness in what the agent is shown.
 
-**What the agent adds is a move OptKnock cannot express.** OptKnock searches deletions only.
-Handed its own proven design and one place left in the budget, the agent forces flux through
-the glyoxylate shunt (`ICL`) and reaches 10.761 — 8.6% above the deterministic optimum, at a
-real cost in growth (0.068 against 0.091, both above the floor). Verified independently: the
-result lies inside the **loop-free** feasible succinate range for that design, so it is not a
-thermodynamic artifact.
+**What the agent adds is a move OptKnock cannot express.** OptKnock's variables are
+present-or-absent: a 50% cap is not a constraint its formulation can write down. Handed its
+own proven design, the agent halved acetate kinase (`ACKr`) on top of it and reached 9.946.
+That is **+0.4%** — a small margin honestly won, on a problem where the deterministic method
+is already close to the ceiling, and bought with growth (0.055 against 0.091, both above the
+floor).
 
-**Over eight independent runs of one configuration**: all eight reached 10.761, in six steps,
-five seconds and $0.0011 each. Standard deviation 0.0. The agent does not do worse than the
-deterministic method because it starts from it.
+**The margin used to be 8.6%, and the vocabulary change is why.** Forcing flux through the
+glyoxylate shunt on top of OptKnock's design reaches 10.761, and that is what earlier runs
+did. Amplification was removed anyway, for the reason in *Why there is no amplification*
+above. The headroom row keeps the consequence visible in every run instead of leaving it as
+an argument.
 
-Five things made the difference, and each was a failure before it was a fix:
+**The agent found the optimum of the space it was given.** An exhaustive screen of every
+gene-associated deletion and every 50% knockdown on top of the OptKnock set reaches 9.9461 —
+the same number, via `ACKr` or the equivalent `PTAr`. That is worth more than the margin: it
+says the loop is searching its space properly, not that this space is the best one.
+
+Four things made the difference, and each was a failure before it was a fix:
 
 - **Seeding.** `seed_with_strain_design` runs the designer once before the first move and puts
   the reactions it names on the board with the guaranteed product they buy.
 - **Adopting a design as one move.** A design's deletions only pay off together — `ACALD`
   alone buys almost nothing — so an agent judging each move by the product change it causes
   abandons the design after the first deletion. `adopt_best_design` applies the set.
-- **Measuring instead of guessing.** Asked which reaction to amplify, the agent reached for
-  fumarate reductase, the direct product-forming step, which is already saturated and buys
-  nothing. CMM now solves for the answer — one pFBA per candidate, about a second for a board
-  of 24 — and puts the measured change on the board.
+- **Measuring instead of guessing.** Which branch competes with the product depends on the
+  whole network at the current bounds, not on a reaction's own stoichiometry. CMM solves for
+  it — two pFBA solves per candidate — and puts the measured change on the board.
 - **Making that measurement automatic.** While it was still a move the agent could choose, it
   stopped choosing it once the cofactor reading gave it something plausible to infer from.
-- **Saying when a move was too strong rather than wrong.** `force_on_high` on `ICL` breaches
-  the floor and `force_on_low` on the same reaction is the 8%. Naming the gentler move in the
-  rejection took the outcome from nine runs in ten to ten in ten.
 
 **This is one problem on one small model.** It is evidence that the loop can add something to
 a deterministic optimum on a problem where the two intervention classes are complementary. It

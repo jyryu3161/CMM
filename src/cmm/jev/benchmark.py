@@ -6,10 +6,15 @@ example is not flattering in the way one might hope: OptKnock reaches 9.91 mmol 
 under a second, deterministically and provably, and an unaided JEV run does not match it.
 
 What the agent adds is a different thing, and the comparison is what makes it visible.
-OptKnock searches knockouts only — its formulation cannot express "force more flux through
-this reaction". Handed OptKnock's own proven design and one place left in the budget, JEV
-added an amplification on the glyoxylate shunt and reached 10.76, above the deterministic
-optimum, at a real cost in growth. Neither number means anything without the other.
+OptKnock's variables are present-or-absent: its formulation cannot express "carry half as
+much flux through this reaction". A knockdown on top of a proven design is therefore a move
+the designer could not have considered, and is where an agent has something to add.
+
+One row here is deliberately a move the agent may **not** make. The vocabulary is deletions
+and knockdowns only, on the grounds that a forced lower bound is not what over-expression
+does to a cell, and that restriction costs real product: on anaerobic succinate, forcing the
+glyoxylate shunt on reaches 10.76 against 9.95 for the best deletion-and-knockdown design.
+The FSEOF row prices that decision in every run rather than leaving it as an argument.
 
 Every design here is evaluated the same way: apply it, solve pFBA, read the product and the
 growth. A comparison in which each method reports its own favourite quantity is not a
@@ -25,8 +30,12 @@ import time
 import pandas as pd
 from cobra import Model
 
-from cmm.core.simulation import FluxSolution, pfba
+from cmm.core.simulation import FluxSolution
 from cmm.jev.actions import Intervention
+
+#: One label, used by every branch of the FSEOF row so the comparison table cannot end up
+#: with two spellings of the same method depending on whether it succeeded.
+_HEADROOM_LABEL = "best amplification on top of this design (outside the vocabulary)"
 
 
 @dataclass(frozen=True)
@@ -120,12 +129,14 @@ def compare_with_baselines(
             )
         )
 
-    rows.append(_fseof_row(model, product, biomass, growth_floor))
+    # The agent's design, if there is one, is what the headroom row probes on top of; with no
+    # design it probes the wild type, which is the honest thing to compare a wild type to.
+    bounds = {i.reaction_id: (i.lower_bound, i.upper_bound) for i in jev_interventions}
+    rows.append(
+        _amplification_headroom_row(model, product, biomass, growth_floor, bounds)
+    )
 
     if jev_interventions:
-        bounds = {
-            i.reaction_id: (i.lower_bound, i.upper_bound) for i in jev_interventions
-        }
         solution = _evaluate(model, bounds)
         rows.append(
             BaselineRow(
@@ -275,93 +286,189 @@ def _strain_design_row(
         status=solution.status,
         note=(
             f"best of {len(result.designs)} designs by guaranteed product "
-            f"({best.guaranteed_product:.4g}); knockouts only — this formulation cannot "
-            "express an amplification"
+            f"({best.guaranteed_product:.4g}); complete deletions only — this formulation "
+            "cannot express a partial knockdown"
         ),
     )
 
 
-def _fseof_row(
-    model: Model, product: str, biomass: str, growth_floor: float
-) -> BaselineRow:
-    """FSEOF's top amplification target, forced on by the same rule the agent uses.
+#: Fraction of a reaction's loop-free feasible maximum the amplification probe forces through
+#: it when it carries no flux. Well short of the ceiling on purpose: forcing a reaction to its
+#: own maximum leaves the rest of the network no freedom and almost always collapses growth,
+#: which is not a fair reading of what over-expressing that enzyme would do.
+_FORCE_ON_FRACTION = 0.25
 
-    FSEOF ranks reactions; it does not state how hard to push one. Scoring its top target at
-    the level ``force_on_low`` would use makes the two comparable, and the choice is stated
-    rather than left implicit.
+#: How many of FSEOF's ranked targets the probe tries. The answer is almost always in the
+#: first few, and each one costs a solve.
+_HEADROOM_TARGETS = 10
+
+
+def _amplification_headroom_row(
+    model: Model,
+    product: str,
+    biomass: str,
+    growth_floor: float,
+    design: Mapping[str, tuple[float, float]],
+) -> BaselineRow:
+    """The best amplification available **on top of the design being scored**.
+
+    This row is the price tag on a policy decision, measured rather than argued. The agent's
+    vocabulary is deletions and knockdowns only, because a lower bound on a flux is not what
+    over-expressing an enzyme does to a cell: it tells the solver the flux *must* be carried,
+    by whatever route is cheapest, while stronger expression only raises a capacity the cell
+    may decline to use. That restriction has a cost, and the honest place to show it is beside
+    the agent's own result.
+
+    **On top of the design, not on the wild type**, because that is where the question lives
+    and the two answers are nothing alike. FSEOF's top amplification target on wild-type
+    anaerobic ``e_coli_core`` buys exactly nothing. Ranked instead on a design that already
+    deletes ``ACALD``, ``D_LACt2`` and ``THD2``, the same method puts the glyoxylate shunt
+    fourth, and forcing it reaches 10.76 against the design's 9.95.
+
+    It is also why this is computed per run instead of quoted as a constant. Whether that
+    10.76 is *available* depends on how much growth the design has already spent: at a floor
+    of 0.05 it is not, because it leaves growth at 0.041, and the best amplification that
+    keeps the strain alive reaches 10.04. A headline percentage would have been true of one
+    design and wrong about the next.
+
+    The loop-free range is not optional for a reaction at zero. A plain LP maximisation of
+    ``FRD7`` on anaerobic ``e_coli_core`` returns its 1000 bound through the thermodynamically
+    infeasible ``FRD7``/``SUCDi`` cycle, on a model taking up 10 mmol gDW^-1 h^-1 of glucose.
+    A quarter of that would be physically meaningless, and would flatter this row.
     """
 
     from cmm.features.production import fseof
-    from cmm.jev.actions import (
-        ACTION_CATALOGUE,
-        ActionNotApplicable,
-        build_intervention,
-    )
 
     started = time.perf_counter()
-    try:
-        targets = fseof(model, product, biomass).amplification_targets()
-    except Exception as error:
+
+    def failed(status: str, note: str, found: tuple[str, ...] = ()) -> BaselineRow:
         return BaselineRow(
-            method="FSEOF top amplification target",
-            design=(),
+            method=_HEADROOM_LABEL,
+            design=found,
             product_flux=float("nan"),
             growth=float("nan"),
             seconds=time.perf_counter() - started,
             deterministic=True,
-            status="failed",
-            note=f"FSEOF could not run: {error}",
-        )
-    if not targets:
-        return BaselineRow(
-            method="FSEOF top amplification target",
-            design=(),
-            product_flux=float("nan"),
-            growth=float("nan"),
-            seconds=time.perf_counter() - started,
-            deterministic=True,
-            status="no target",
-            note="FSEOF selected no amplification target",
+            status=status,
+            note=note,
         )
 
-    reference = pfba(model).fluxes
-    target = targets[0]
-    action = ACTION_CATALOGUE[
-        "force_on_low"
-        if abs(float(reference.get(target, 0.0))) <= 1e-9
-        else "amplify_2x"
-    ]
-    try:
-        intervention = build_intervention(
-            model, target, action, reference_flux=float(reference.get(target, 0.0))
-        )
-    except ActionNotApplicable as error:
-        return BaselineRow(
-            method="FSEOF top amplification target",
-            design=(target,),
-            product_flux=float("nan"),
-            growth=float("nan"),
-            seconds=time.perf_counter() - started,
-            deterministic=True,
-            status="not applicable",
-            note=str(error),
-        )
-    solution = _evaluate(
-        model, {target: (intervention.lower_bound, intervention.upper_bound)}
+    with model:
+        for reaction_id, applied in design.items():
+            model.reactions.get_by_id(reaction_id).bounds = applied
+        base = _evaluate(model, {})
+        if base.status != "optimal":
+            return failed("infeasible", "the design itself does not solve")
+        before = float(base.fluxes.get(product, 0.0))
+        try:
+            ranked = fseof(model, product, biomass).amplification_targets()
+        except Exception as error:
+            return failed("failed", f"FSEOF could not run on this design: {error}")
+        if not ranked:
+            return failed("no target", "FSEOF ranked no amplification target")
+
+        best: tuple[str, float, float, str] | None = None
+        refused = 0
+        for target in ranked[:_HEADROOM_TARGETS]:
+            probe = _forced_bounds(model, target, float(base.fluxes.get(target, 0.0)))
+            if probe is None:
+                continue
+            solution = _evaluate(model, {target: probe[0]})
+            growth = float(solution.fluxes.get(biomass, 0.0))
+            if solution.status != "optimal" or growth < growth_floor:
+                refused += 1
+                continue
+            flux = float(solution.fluxes.get(product, 0.0))
+            if best is None or flux > best[1]:
+                best = (target, flux, growth, probe[1])
+
+    tail = (
+        f"; {refused} of the ranked targets were refused for dropping growth below the floor"
+        if refused
+        else ""
     )
+    if best is None:
+        return failed(
+            "no viable target",
+            f"no amplification among FSEOF's top {_HEADROOM_TARGETS} keeps the strain "
+            f"above the growth floor on this design{tail}",
+        )
+    target, flux, growth, level = best
     return BaselineRow(
-        method="FSEOF top amplification target",
-        design=(intervention.describe(),),
-        product_flux=float(solution.fluxes.get(product, 0.0)),
-        growth=float(solution.fluxes.get(biomass, 0.0)),
+        method=_HEADROOM_LABEL,
+        design=(f"{target}: forced to {level}",),
+        product_flux=flux,
+        growth=growth,
         seconds=time.perf_counter() - started,
         deterministic=True,
-        status=solution.status,
+        status="optimal",
         note=(
-            f"top of {len(targets)} ranked targets, applied with the agent's own "
-            f"{action.name} rule so the two are comparable"
+            f"best of FSEOF's top {_HEADROOM_TARGETS} on this design, worth "
+            f"{flux - before:+.4g} over it. This move is OUTSIDE the agent's vocabulary, "
+            f"which is deletions and knockdowns only; the row prices that restriction rather "
+            f"than competing with it{tail}"
         ),
     )
+
+
+def _forced_bounds(
+    model: Model, reaction_id: str, reference: float
+) -> tuple[tuple[float, float], str] | None:
+    """Bounds that force flux through a reaction, and a phrase describing the level.
+
+    Twice its current flux when it carries one; a quarter of its loop-free maximum when it
+    does not. ``None`` when the reaction cannot carry flux in either direction, which is not
+    an error — there is simply nothing to switch on.
+    """
+
+    reaction = model.reactions.get_by_id(reaction_id)
+    lower, upper = float(reaction.lower_bound), float(reaction.upper_bound)
+    if abs(reference) > 1e-9:
+        target = 2.0 * reference
+        if reference > 0:
+            return (
+                min(target, upper),
+                upper,
+            ), f"at least {abs(target):.4g} (2x its flux)"
+        return (lower, max(target, lower)), f"at least {abs(target):.4g} (2x its flux)"
+
+    low, high = _loopless_extreme(model, reaction_id)
+    forward, reverse = max(high, 0.0), min(low, 0.0)
+    if max(forward, -reverse) <= 1e-9:
+        return None
+    if forward >= -reverse:
+        target = min(_FORCE_ON_FRACTION * forward, upper)
+        bounds = (target, upper)
+    else:
+        target = max(_FORCE_ON_FRACTION * reverse, lower)
+        bounds = (lower, target)
+    return bounds, (
+        f"at least {abs(target):.4g} ({_FORCE_ON_FRACTION:.0%} of its loop-free maximum, "
+        "it carrying no flux here)"
+    )
+
+
+def _loopless_extreme(model: Model, reaction_id: str) -> tuple[float, float]:
+    """The largest negative and positive flux a reaction can carry, free of internal loops."""
+
+    from cmm.core.simulation import fva
+
+    try:
+        ranges = fva(
+            model,
+            reactions=[reaction_id],
+            fraction_of_optimum=0.0,
+            loopless="fastSNP",
+            processes=1,
+        )
+    except (
+        Exception
+    ):  # pragma: no cover - solver-specific; the plain range still bounds it
+        ranges = fva(
+            model, reactions=[reaction_id], fraction_of_optimum=0.0, processes=1
+        )
+    flux_range = ranges[reaction_id]
+    return float(flux_range.minimum), float(flux_range.maximum)
 
 
 def comparison_frame(rows: Sequence[BaselineRow]) -> pd.DataFrame:
@@ -383,11 +490,19 @@ def comparison_summary(
     if not scored:
         return {"product": product, "verdict": "no method produced a scorable design"}
     best = max(scored, key=lambda row: row.product_flux)
-    deterministic = [row for row in scored if row.deterministic and row.design]
+    # The FSEOF row applies an amplification, which the agent is not permitted to make. It
+    # belongs in the table — it is what the vocabulary restriction costs — but scoring the
+    # agent against it would be scoring it on a move it was forbidden to play.
+    deterministic = [
+        row
+        for row in scored
+        if row.deterministic and row.design and row.method != _HEADROOM_LABEL
+    ]
     best_deterministic = (
         max(deterministic, key=lambda row: row.product_flux) if deterministic else None
     )
     agent = next((row for row in scored if row.method == "JEV agent"), None)
+    amplification = next((row for row in scored if row.method == _HEADROOM_LABEL), None)
 
     verdict: str
     if agent is None:
@@ -409,6 +524,18 @@ def comparison_summary(
         )
     else:
         verdict = f"the agent matched {best_deterministic.method}."
+
+    # State the price of the restriction in the same breath as the verdict, so a reader is
+    # never left to infer that deletions and knockdowns are all there was.
+    if agent is not None and amplification is not None:
+        gap = amplification.product_flux - agent.product_flux
+        if gap > 1e-6 and amplification.design:
+            verdict += (
+                f" Forcing flux through {amplification.design[0].split(':')[0]} on top of "
+                f"this design reaches {amplification.product_flux:.4g}, {gap:+.4g} more — "
+                "but that is an amplification, which this run does not allow itself, because "
+                "a forced lower bound is not what over-expressing an enzyme does to a cell."
+            )
 
     return {
         "product": product,

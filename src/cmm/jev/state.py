@@ -16,6 +16,8 @@ Those numbers are, per candidate reaction:
 * **what it does to redox** — net NADH and NADPH stoichiometry
 * **whether removing it kills the cell** — filled in once an ``essentiality_scan`` has run
 * **whether it pulls the product** — FSEOF slope, filled in once an ``fseof_scan`` has run
+* **what deleting or halving it actually does** — measured by CMM, not inferred, and
+  refreshed whenever the design changes
 * **what the literature says** — filled in only when web research is enabled
 
 The JEV decision model has a 32K context, so size is the binding constraint, not cost. Every
@@ -348,9 +350,12 @@ class CandidateEvidence:
     atp_production_share: float
     essential: bool | None = None
     fseof_slope: float | None = None
-    #: Change in product flux CMM measured when this reaction was forced on, from an
-    #: ``amplification_screen``. ``None`` until that scan has run.
-    amplification_gain: float | None = None
+    #: Change in product flux CMM measured when this reaction was deleted, and when it was
+    #: capped at half its wild-type flux, from the intervention screen. ``None`` until that
+    #: screen has run. These are the two moves the agent can make, so these are the two
+    #: numbers that decide the move.
+    deletion_gain: float | None = None
+    knockdown_gain: float | None = None
     design_note: str = ""
     literature: str = ""
     citations: tuple[str, ...] = ()
@@ -396,23 +401,24 @@ class CandidateEvidence:
             parts.append(
                 f"FSEOF: flux {direction} ({self.fseof_slope:+.3g}) as product is forced up"
             )
-        if self.amplification_gain is not None:
-            if self.amplification_gain > 1e-6:
-                parts.append(
-                    f"MEASURED: forcing flux through it raises the product by "
-                    f"{self.amplification_gain:+.4g}"
-                )
-            elif self.amplification_gain < -1e-6:
-                parts.append(
-                    f"measured: forcing flux through it LOWERS the product by "
-                    f"{self.amplification_gain:+.4g}"
-                )
+        for label, gain in (
+            ("deleting it", self.deletion_gain),
+            ("halving it", self.knockdown_gain),
+        ):
+            if gain is None:
+                continue
+            if gain > 1e-6:
+                parts.append(f"MEASURED: {label} raises the product by {gain:+.4g}")
+            elif gain < -1e-6:
+                parts.append(f"measured: {label} LOWERS the product by {gain:+.4g}")
             else:
-                parts.append(
-                    "measured: forcing flux through it changes the product by 0"
-                )
+                parts.append(f"measured: {label} changes the product by 0")
         if self.design_note:
             parts.append(self.design_note)
+        if self.genes:
+            # The moves are gene edits and the brief names genes, so a board that named only
+            # reactions left the agent unable to connect "delete ldhA" to any option it had.
+            parts.append(f"genes {', '.join(self.genes)}")
         if self.subsystem:
             parts.append(f"subsystem {self.subsystem}")
         if self.literature:
@@ -461,6 +467,8 @@ class CandidateEvidence:
             "atp_production_share": self.atp_production_share,
             "essential": self.essential,
             "fseof_slope": self.fseof_slope,
+            "deletion_gain": self.deletion_gain,
+            "knockdown_gain": self.knockdown_gain,
             "n_citations": len(self.citations),
         }
 
@@ -1037,8 +1045,14 @@ class GameState:
     round_index: int = 1
     tick_index: int = 1
     ticks_left: int = 0
-    interventions_used: int = 0
-    max_interventions: int = 4
+    #: The design budget, counted per kind of edit. Two numbers rather than one total because
+    #: that is what the agent has to plan against: a deletion and a knockdown are different
+    #: things to build, they are limited separately, and a move whose own budget is gone is
+    #: not offered at all.
+    knockouts_used: int = 0
+    max_knockouts: int = 6
+    knockdowns_used: int = 0
+    max_knockdowns: int = 3
 
     def to_payload(self) -> dict[str, object]:
         """The compact JSON object sent as the Decisions ``state``."""
@@ -1077,8 +1091,10 @@ class GameState:
                 "round": self.round_index,
                 "step": self.tick_index,
                 "steps_left_this_round": self.ticks_left,
-                "interventions_active": self.interventions_used,
-                "max_interventions": self.max_interventions,
+                "gene_deletions_used": self.knockouts_used,
+                "gene_deletions_allowed": self.max_knockouts,
+                "gene_knockdowns_used": self.knockdowns_used,
+                "gene_knockdowns_allowed": self.max_knockdowns,
             },
             "active_interventions": list(self.active_interventions),
             "previous_rounds": list(self.previous_rounds),
@@ -1145,11 +1161,16 @@ class ScanCache:
 
     essential: dict[str, bool] = field(default_factory=dict)
     fseof_slopes: dict[str, float] = field(default_factory=dict)
-    #: reaction id -> product-flux change CMM measured when it was forced on, against the
-    #: current design. This is the evidence an agent needs to choose an amplification, and it
-    #: is measured rather than reasoned about: the reaction on the direct route to the product
-    #: is often already saturated, and the one that pays is often a bypass no one would guess.
-    amplification_gains: dict[str, float] = field(default_factory=dict)
+    #: reaction id -> product-flux change CMM measured when it was deleted, against the
+    #: current design. This is the evidence an agent needs to choose a knockout, and it is
+    #: measured rather than reasoned about: which branch competes with the product is a
+    #: property of the whole network at the current bounds, not of the reaction's own
+    #: stoichiometry, and reasoning from the latter is systematically wrong.
+    deletion_gains: dict[str, float] = field(default_factory=dict)
+    #: The same for a 50% knockdown. Both are measured because the pair is the decision: a
+    #: reaction whose deletion is lethal and whose knockdown pays is exactly the case the
+    #: knockdown move exists for, and screening only deletions would hide it.
+    knockdown_gains: dict[str, float] = field(default_factory=dict)
     envelope_note: str = ""
     literature: dict[str, tuple[str, tuple[str, ...]]] = field(default_factory=dict)
     #: reaction id -> what the deterministic strain designer found about it. These are the
@@ -1183,9 +1204,8 @@ class ScanCache:
                     candidate,
                     essential=self.essential.get(candidate.reaction_id),
                     fseof_slope=self.fseof_slopes.get(candidate.reaction_id),
-                    amplification_gain=self.amplification_gains.get(
-                        candidate.reaction_id
-                    ),
+                    deletion_gain=self.deletion_gains.get(candidate.reaction_id),
+                    knockdown_gain=self.knockdown_gains.get(candidate.reaction_id),
                     design_note=self.design_notes.get(candidate.reaction_id, ""),
                     literature=literature,
                     citations=citations,
@@ -1196,8 +1216,8 @@ class ScanCache:
     def invalidate(self) -> None:
         """Forget the scans that the current bounds make stale, and only those.
 
-        Essentiality, FSEOF slopes and measured amplification gains are properties of the
-        design as it stands, so changing it makes them wrong. Literature is a property of a
+        Essentiality, FSEOF slopes and the measured deletion and knockdown gains are
+        properties of the design as it stands, so changing it makes them wrong. Literature is a property of a
         reaction and survives. So does what the deterministic strain designer found: it was
         computed on the wild type and is a fact about the *model*, which is why clearing it
         at a round boundary left later rounds unable to see the proven design at all.
@@ -1205,7 +1225,8 @@ class ScanCache:
 
         self.essential.clear()
         self.fseof_slopes.clear()
-        self.amplification_gains.clear()
+        self.deletion_gains.clear()
+        self.knockdown_gains.clear()
         self.envelope_note = ""
         self.completed.discard("fseof_scan")
         self.completed.discard("essentiality_scan")
@@ -1223,7 +1244,8 @@ class ScanCache:
         return ScanCache(
             essential=dict(self.essential),
             fseof_slopes=dict(self.fseof_slopes),
-            amplification_gains=dict(self.amplification_gains),
+            deletion_gains=dict(self.deletion_gains),
+            knockdown_gains=dict(self.knockdown_gains),
             envelope_note=self.envelope_note,
             literature=dict(self.literature),
             design_notes=dict(self.design_notes),
@@ -1236,7 +1258,8 @@ class ScanCache:
 
         self.essential = dict(snapshot.essential)
         self.fseof_slopes = dict(snapshot.fseof_slopes)
-        self.amplification_gains = dict(snapshot.amplification_gains)
+        self.deletion_gains = dict(snapshot.deletion_gains)
+        self.knockdown_gains = dict(snapshot.knockdown_gains)
         self.envelope_note = snapshot.envelope_note
         self.literature = dict(snapshot.literature)
         self.design_notes = dict(snapshot.design_notes)
