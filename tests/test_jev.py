@@ -1399,8 +1399,8 @@ def test_a_later_round_can_see_what_the_earlier_ones_achieved(
 
     later = client.states[-1]
     assert later["previous_rounds"], "a later round must see the earlier ones"
-    assert any("round 1" in line for line in later["previous_rounds"])
-    assert any("the best so far" in line for line in later["previous_rounds"])
+    assert any("round 1 reached" in line for line in later["previous_rounds"])
+    assert any("the best round so far" in line for line in later["previous_rounds"])
     assert len(result.rounds) >= 2
 
 
@@ -1928,3 +1928,84 @@ def test_nothing_in_the_question_set_assumes_one_organism_or_one_product(
     # The product and the floor it was given are what it asks about.
     assert "EX_lac__D_e" in authored
     assert "0.2" in authored
+
+
+def test_each_round_is_an_independent_attempt(anaerobic_core_path) -> None:
+    """A round is one game, not a phase of a longer one.
+
+    Rounds used to continue one another and the effect was not subtle: the first filled the
+    design and the rest had nothing left to do, so a three-round run spent five steps of a
+    possible thirty-six. What carries across is the record of what each round reached, not
+    the bounds that reached it.
+    """
+
+    client = ScriptedClient([("SUCOAS", "force_on_high"), ("end_round", None)] * 4)
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        rounds=3,
+        steps_per_round=2,
+        growth_floor=0.01,
+        candidate_limit=12,
+        run_moma=False,
+        seed_with_strain_design=False,
+        run_baseline_comparison=False,
+    )
+    result = run_jev_design(config, client=client)
+
+    # The same first move is available in every round, which it would not be if the design
+    # from the round before were still standing: an intervened reaction leaves the board.
+    firsts = [tick for tick in result.ticks if tick.tick_index == 1]
+    assert len(firsts) == 3
+    assert {tick.target for tick in firsts} == {"SUCOAS"}
+    assert all(tick.outcome == "applied" for tick in firsts)
+    # Every round starts from the wild type, so every round's first move sees no design.
+    assert all(tick.n_active_interventions == 1 for tick in firsts)
+    # And each round is scored on its own.
+    assert len(result.rounds) == 3
+    assert all(record.product_flux > 0 for record in result.rounds)
+
+
+def test_the_strain_designer_survives_a_round_boundary(anaerobic_core_path) -> None:
+    """What the designer found is a fact about the model, not about the design.
+
+    Clearing it with the rest of the scans at a round boundary left later rounds unable to
+    see the proven deletions at all.
+    """
+
+    pytest.importorskip("straindesign")
+
+    client = ScriptedClient([("end_round", None)] * 6)
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        rounds=2,
+        steps_per_round=1,
+        growth_floor=0.05,
+        candidate_limit=24,
+        run_moma=False,
+        seed_with_strain_design=True,
+        run_baseline_comparison=False,
+    )
+    run_jev_design(config, client=client)
+
+    # The second round is offered the proven design just as the first was.
+    second = client.asked[-1]["target"]["criteria"]
+    assert "adopt_best_design" in second
+    assert {"LDH_D", "THD2"} & set(second)
+
+
+def test_the_substrate_is_detected_rather_than_asked_for(anaerobic_core) -> None:
+    """One fact, one place. The medium already decides what the model is fed."""
+
+    from cmm.jev.engine import detect_substrate
+
+    assert (
+        detect_substrate(anaerobic_core, pfba(anaerobic_core).fluxes) == "EX_glc__D_e"
+    )
+    # CO2 uptake is not being fed on: a model fixing carbon dioxide has no substrate here.
+    empty = {r.id: 0.0 for r in anaerobic_core.reactions}
+    empty["EX_co2_e"] = -5.0
+    assert detect_substrate(anaerobic_core, empty) is None

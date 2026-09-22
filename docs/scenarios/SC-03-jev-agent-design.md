@@ -33,13 +33,24 @@ would make a two-step manoeuvre impossible to express.
 
 ## Rounds and steps
 
-A **round** is one game. A **step** is one decision, and every decision costs one — an
-intervention, an undo, a scan that changes nothing. `steps_per_round` is how long the agent
-may play; a round ends when its steps run out or the agent chooses `end_round`.
+**A round is one independent attempt.** It starts from the wild type with an empty design,
+plays until its steps run out or the agent ends it, and is scored on its own. What carries
+across rounds is knowledge, not bounds: the agent is shown what each earlier round reached
+and with which design, so a later round can go after something different, or head for what
+already worked with `restore_best_design`.
 
-`max_interventions` is a different budget entirely: how many changes may be active at once,
-which is the number a laboratory would have to build. A long game and a small design is the
-usual combination, because steps are cheap and edits are not.
+Rounds used to continue one another, and the effect was not subtle — the first round filled
+the design and the rest had nothing left to do, so a three-round run spent five steps of a
+possible thirty-six.
+
+A **step** is one decision, and every decision costs one: an intervention, an undo, a scan
+that changes nothing. `max_interventions` is a different budget entirely — how many changes
+one attempt may carry at once, which is the number a laboratory would have to build. A long
+game and a small design is the usual combination, because steps are cheap and edits are not.
+
+There is **no substrate to configure.** The yield is quoted per whatever carbon source the
+condition actually feeds the model, which the wild-type solve already says. Naming it
+separately was a second place for the same fact to be wrong.
 
 ## One step
 

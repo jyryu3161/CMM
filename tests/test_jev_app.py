@@ -78,8 +78,10 @@ def test_the_product_combo_is_filled_from_the_model(window, monkeypatch) -> None
         for i in range(window.jev_product_combo.count())
     ]
     assert "EX_succ_e" in products
-    assert window.jev_substrate_combo.currentText() == "EX_glc__D_e"
     assert window.jev_run_btn.isEnabled()
+    # There is no substrate to choose: the yield is quoted per whatever carbon source the
+    # condition actually feeds the model, which the wild-type solve already says.
+    assert not hasattr(window, "jev_substrate_combo")
 
 
 def test_the_map_is_redrawn_once_per_move_while_the_run_is_still_going(

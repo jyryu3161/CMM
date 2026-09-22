@@ -102,12 +102,6 @@ class JevTabMixin:
         )
         form.addRow("Product exchange:", self.jev_product_combo)
 
-        self.jev_substrate_combo = QComboBox()
-        self.jev_substrate_combo.setToolTip(
-            "Used only for the theoretical yield shown on the agent's scoreboard."
-        )
-        form.addRow("Substrate exchange:", self.jev_substrate_combo)
-
         budget_row = QHBoxLayout()
         self.jev_rounds_spin = QSpinBox()
         self.jev_rounds_spin.setRange(1, 50)
@@ -117,7 +111,7 @@ class JevTabMixin:
         # cheap (about 0.6 s and $0.00016), so the ceiling is generous and the design is
         # bounded separately by the intervention count next to it.
         self.jev_ticks_spin.setRange(1, 1000)
-        self.jev_ticks_spin.setValue(40)
+        self.jev_ticks_spin.setValue(20)
         self.jev_targets_spin = QSpinBox()
         self.jev_targets_spin.setRange(1, 20)
         self.jev_targets_spin.setValue(4)
@@ -196,6 +190,7 @@ class JevTabMixin:
         # questions: how far through the game, and how far through this round. Both maxima
         # are known before the first call.
         bars = QHBoxLayout()
+        bars.setSpacing(10)
         self.jev_round_progress = QProgressBar()
         self.jev_round_progress.setFormat("round \u2014")
         self.jev_round_progress.setRange(0, 1)
@@ -204,6 +199,20 @@ class JevTabMixin:
         self.jev_progress.setFormat("idle")
         self.jev_progress.setRange(0, 1)
         self.jev_progress.setValue(0)
+        # Tall enough to read across the room, and two colours so a glance tells which clock
+        # is which: the round is the game, the step is the move inside it.
+        for bar, chunk in (
+            (self.jev_round_progress, "#2f5d8a"),
+            (self.jev_progress, "#4c7a34"),
+        ):
+            bar.setMinimumHeight(26)
+            bar.setTextVisible(True)
+            bar.setStyleSheet(
+                "QProgressBar { border: 1px solid #c2ccd6; border-radius: 4px; "
+                "background: #f2f5f8; text-align: center; font-weight: bold; "
+                "color: #23313f; } "
+                f"QProgressBar::chunk {{ background: {chunk}; border-radius: 3px; }}"
+            )
         bars.addWidget(self.jev_round_progress, 2)
         bars.addWidget(self.jev_progress, 3)
         layout.addLayout(bars)
@@ -227,13 +236,22 @@ class JevTabMixin:
         layout.addWidget(summary_area)
 
         results = QSplitter(Qt.Horizontal)
+        map_box = QVBoxLayout()
         self.jev_canvas_holder = QVBoxLayout()
+        map_box.addLayout(self.jev_canvas_holder, 1)
+        # The picture needs to say what it is. Asked what they were looking at, the honest
+        # answer was "a curated Escher map, or a schematic when no curated map fits the
+        # model", and nothing on screen said either.
+        self.jev_map_caption = QLabel("")
+        self.jev_map_caption.setWordWrap(True)
+        self.jev_map_caption.setStyleSheet("color: #5a6b7c; font-size: 11px;")
+        map_box.addWidget(self.jev_map_caption)
         holder = QWidget()
-        holder.setLayout(self.jev_canvas_holder)
+        holder.setLayout(map_box)
         # The map is the point of this tab, so it gets a floor no stretch factor can take
         # away. Stretch factors alone lost: six stretched table columns claim a minimum width
         # between them that squeezed the map to ninety pixels of unreadable smear.
-        holder.setMinimumWidth(500)
+        holder.setMinimumWidth(620)
         results.addWidget(holder)
 
         self.jev_table = QTableWidget(0, 6)
@@ -250,7 +268,7 @@ class JevTabMixin:
             )
         self.jev_table.verticalHeader().setVisible(False)
         self.jev_table.setAlternatingRowColors(True)
-        self.jev_table.setMinimumWidth(560)
+        self.jev_table.setMinimumWidth(500)
 
         # What the agent weighed, above what it did. A ``choice`` answer carries a
         # probability for every option it was offered, so each move records a complete
@@ -284,11 +302,11 @@ class JevTabMixin:
         right.addWidget(panel)
         right.addWidget(self.jev_table)
         right.setSizes([260, 200])
-        right.setMinimumWidth(560)
+        right.setMinimumWidth(500)
         results.addWidget(right)
         results.setStretchFactor(0, 3)
         results.setStretchFactor(1, 2)
-        results.setSizes([640, 560])
+        results.setSizes([780, 520])
         layout.addWidget(results, 1)
 
         self._jev_bridge = _TickBridge()
@@ -307,17 +325,12 @@ class JevTabMixin:
         if not hasattr(self, "jev_product_combo"):
             return
         exchanges = sorted(r.id for r in self.model.exchanges)
-        for combo in (self.jev_product_combo, self.jev_substrate_combo):
-            combo.blockSignals(True)
-            combo.clear()
-            combo.addItems(exchanges)
-            combo.blockSignals(False)
+        self.jev_product_combo.blockSignals(True)
+        self.jev_product_combo.clear()
+        self.jev_product_combo.addItems(exchanges)
+        self.jev_product_combo.blockSignals(False)
         if self._default_product and self._default_product in exchanges:
             self.jev_product_combo.setCurrentText(self._default_product)
-        for guess in ("EX_glc__D_e", "EX_glc_e"):
-            if guess in exchanges:
-                self.jev_substrate_combo.setCurrentText(guess)
-                break
 
         from cmm.jev import credentials
 
@@ -487,7 +500,6 @@ class JevTabMixin:
         config = JevConfig(
             model_path=model_path,
             product=product,
-            substrate=self.jev_substrate_combo.currentText() or None,
             rounds=self.jev_rounds_spin.value(),
             steps_per_round=self.jev_ticks_spin.value(),
             brief=self.jev_brief.toPlainText(),
@@ -696,8 +708,16 @@ class JevTabMixin:
         title = f"R{tick.round_index}S{tick.tick_index}  {move}  —  product {tick.product_flux:.4g}"
         try:
             if self._map_path:
+                # Metabolite labels off. At full size the curated map reads well, but
+                # this panel scales it to roughly a third of that and the labels become
+                # overlapping smudges. Reaction names are what a move is about and they
+                # survive; the metabolite names are recoverable with the toolbar's zoom.
                 figure = escher_flux_map(
-                    self._map_path, dict(fluxes), title="", width=9.0
+                    self._map_path,
+                    dict(fluxes),
+                    title="",
+                    width=9.0,
+                    label_metabolites=False,
                 )
             else:
                 figure = network_flux_map(self.model, dict(fluxes), title="")
@@ -709,6 +729,14 @@ class JevTabMixin:
             self.status_label.setText(f"{tick.headline()} (map not drawn: {exc})")
             return
         self._set_figure(self.jev_canvas_holder, "jev", figure)
+        self.jev_map_caption.setText(
+            "Curated Escher map of this model, coloured and widened by flux. Metabolite "
+            "labels are hidden at this size \u2014 use the magnifier to zoom, or the Flux "
+            "Map tab for the full-size figure."
+            if self._map_path
+            else "Schematic of the highest-flux reactions; no curated Escher map fits this "
+            "model. Arrow colour and width both scale with the flux magnitude."
+        )
 
     def _show_jev_summary(self, result) -> None:
         summary = result.summary()

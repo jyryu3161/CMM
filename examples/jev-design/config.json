@@ -1,7 +1,6 @@
 {
   "model_path": "../production-targets/data/e_coli_core.xml",
   "product": "EX_succ_e",
-  "substrate": "EX_glc__D_e",
   "biomass": "Biomass_Ecoli_core",
   "output_dir": "../../results/example-jev-succinate",
   "organism": "Escherichia coli",
@@ -23,7 +22,7 @@
   },
   "brief": "- The published targets for succinate in anaerobic E. coli are ldhA, pflB, ptsG and the acetate branch (pta/ackA).\n- Growth has to stay above the floor for the strain to be useful at all.\n- Succinate through fumarate reductase consumes NADH, so reducing power is the cofactor to watch.",
   "rounds": 6,
-  "steps_per_round": 40,
+  "steps_per_round": 20,
   "max_interventions": 4,
   "growth_floor": 0.05,
   "candidate_limit": 24,

@@ -91,8 +91,9 @@ from cmm.jev.state import (
 _MAX_IDENTICAL_MOVES = 3
 
 #: How many consecutive rounds may end without the agent changing anything before the run
-#: stops. The state it is shown is identical each time, so a third round would ask the same
-#: question and get the same answer at the same cost.
+#: stops. Every round now starts from the same wild type, so a round that applies nothing at
+#: all means the agent has stopped finding the board worth acting on; two in a row is enough
+#: to believe it. A round that *tries* and is refused is not idle.
 _MAX_IDLE_ROUNDS = 2
 
 TickOutcome = Literal[
@@ -120,19 +121,30 @@ class JevWorkflowError(RuntimeError):
 class JevConfig:
     """A complete, serializable invocation of a JEV design run.
 
-    Two budgets, and they mean different things. ``rounds`` x ``steps_per_round`` bounds how
-    long the agent may *play*: every decision costs one step, including an undo and including
-    a scan that changes nothing. ``max_interventions`` bounds how many changes may be active
-    at once, which is the quantity a wet-lab reader cares about — a design needing twelve
-    edits is not the same proposal as one needing three. A long game and a small design are
-    the usual combination: steps are cheap and edits are not.
+    **A round is one independent attempt**, not a phase of a longer one. Every round starts
+    from the wild type with an empty design, plays until its steps run out or the agent ends
+    it, and is scored on its own. What carries across is knowledge, not bounds: the agent is
+    shown what each earlier round reached and with which design, so a later round can go after
+    something different or head for what already worked.
 
-    A round ends when its steps run out or the agent chooses ``end_round``.
+    Rounds used to continue one another, and the effect was not subtle — the first round
+    filled the design and the rest had nothing left to do, so a three-round run spent five
+    steps of a possible thirty-six.
+
+    Two budgets, and they mean different things. ``steps_per_round`` bounds how long one
+    attempt may *play*: every decision costs one step, including an undo and including a scan
+    that changes nothing. ``max_interventions`` bounds how many changes an attempt may carry
+    at once, which is the quantity a wet-lab reader cares about — a design needing twelve
+    edits is not the same proposal as one needing three.
     """
 
     model_path: str | Path
     product: str
     output_dir: str | Path | None = None
+    #: The exchange the yield is quoted per. Leave it unset: the substrate is whichever
+    #: carbon source the model is actually taking up, which the wild-type solve already says,
+    #: and the medium or condition is what decides that. Naming it separately is a second
+    #: place for the same fact to be wrong.
     substrate: str | None = None
     biomass: str | None = None
     solver: str | None = None
@@ -738,7 +750,13 @@ def run_jev_design(
         metadata={"source_method": "pfba"},
     )
 
-    theoretical = _theoretical_max_yield(model, product, config.substrate, notes)
+    substrate = config.substrate or detect_substrate(model, wild_type.fluxes)
+    if config.substrate is None and substrate is not None:
+        notes.append(
+            f"the yield is quoted per {substrate}, the carbon source this condition actually "
+            "feeds the model"
+        )
+    theoretical = _theoretical_max_yield(model, product, substrate, notes)
 
     # Resolved once: the cofactor pools and the currency metabolites of *this* model, found
     # by formula so a model that does not use BiGG ids is handled rather than silently
@@ -781,6 +799,17 @@ def run_jev_design(
     stop_run = False
 
     for round_index in range(1, config.rounds + 1):
+        # A fresh attempt: the bounds go back to the wild type, and what the agent keeps from
+        # the last round is the record of what it reached, not the design that reached it.
+        while board.interventions:
+            board.undo()
+        board.contribution.clear()
+        board.clear_failures()
+        board.scans.invalidate()
+        board.screen_stale = True
+        board.state_notes.clear()
+        current_product, current_growth = wild_product, wild_growth
+
         round_start_product = current_product
         ended_early = False
         ticks_this_round = 0
@@ -954,13 +983,16 @@ def run_jev_design(
                 ended_early = True
                 break
 
+        design = (
+            "; ".join(i.describe() for i in board.interventions) or "no interventions"
+        )
         board.round_log.append(
-            f"round {round_index}: ended with {len(board.interventions)} interventions at "
-            f"{current_product:.4g} product and {current_growth:.4g} growth"
+            f"round {round_index} reached {current_product:.4g} product at "
+            f"{current_growth:.4g} growth with {design}"
             + (
-                f" \u2014 the best so far is {board.best_score:.4g}"
+                f" (the best round so far reached {board.best_score:.4g})"
                 if board.best_score > current_product + 1e-9
-                else " \u2014 the best so far"
+                else " (the best round so far)"
             )
         )
 
@@ -1892,6 +1924,35 @@ def _objective_reaction_id(model: Model) -> str | None:
         if reaction.objective_coefficient != 0:
             return str(reaction.id)
     return None
+
+
+def detect_substrate(model: Model, fluxes: Mapping[str, float]) -> str | None:
+    """The carbon source the model is actually consuming, from the wild-type solve.
+
+    The yield needs a denominator, and asking for one separately is asking the user to repeat
+    a fact the medium already fixed — in a second place, where it can disagree. The substrate
+    is the organic exchange carrying the largest uptake; CO2 is excluded because a model
+    fixing carbon dioxide is not being fed on it.
+    """
+
+    best: tuple[float, str] | None = None
+    for reaction in model.exchanges:
+        uptake = -float(fluxes.get(reaction.id, 0.0))
+        if uptake <= 1e-9:
+            continue
+        carbon = 0
+        for metabolite in reaction.metabolites:
+            if str(getattr(metabolite, "formula", "") or "") == "CO2":
+                carbon = 0
+                break
+            carbon = max(
+                carbon, int((getattr(metabolite, "elements", None) or {}).get("C", 0))
+            )
+        if carbon <= 0:
+            continue
+        if best is None or uptake > best[0]:
+            best = (uptake, reaction.id)
+    return best[1] if best else None
 
 
 def _theoretical_max_yield(

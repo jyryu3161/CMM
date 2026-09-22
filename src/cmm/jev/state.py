@@ -1194,19 +1194,22 @@ class ScanCache:
         return tuple(enriched)
 
     def invalidate(self) -> None:
-        """Forget the model-dependent scans after the model has been changed.
+        """Forget the scans that the current bounds make stale, and only those.
 
-        Essentiality and FSEOF slopes are properties of the current bounds, so an
-        intervention makes them stale. Literature is a property of the reaction and survives.
+        Essentiality, FSEOF slopes and measured amplification gains are properties of the
+        design as it stands, so changing it makes them wrong. Literature is a property of a
+        reaction and survives. So does what the deterministic strain designer found: it was
+        computed on the wild type and is a fact about the *model*, which is why clearing it
+        at a round boundary left later rounds unable to see the proven design at all.
         """
 
         self.essential.clear()
         self.fseof_slopes.clear()
         self.amplification_gains.clear()
         self.envelope_note = ""
-        self.design_notes.clear()
-        self.designs.clear()
-        self.completed.clear()
+        self.completed.discard("fseof_scan")
+        self.completed.discard("essentiality_scan")
+        self.completed.discard("envelope_probe")
 
     def snapshot(self) -> "ScanCache":
         """A copy, so a change that is later undone can give the scans back.
