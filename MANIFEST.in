@@ -12,5 +12,6 @@ recursive-include .agents *.md *.yaml
 recursive-include docs *.md *.png
 recursive-include tests *.py
 recursive-include examples *.md *.py *.json
+recursive-include evals *.md *.py *.json
 prune examples/production-targets/data
 prune examples/transformation-targets/data

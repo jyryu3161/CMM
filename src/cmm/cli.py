@@ -95,12 +95,15 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _validation_payload(report) -> dict[str, object]:
+def _validation_payload(report, run_directory: Path | None = None) -> dict[str, object]:
+    # Transformation validation leaves `run` unset, so the caller supplies the directory it
+    # validated. Without it a valid SC-02 run reports a null path while SC-01 reports its own.
+    root = report.run.root if report.run is not None else run_directory
     return {
         "valid": report.valid,
         "issues": list(report.issues),
         "warnings": list(report.warnings),
-        "run_directory": str(report.run.root) if report.run is not None else None,
+        "run_directory": str(root) if root is not None else None,
     }
 
 
@@ -175,7 +178,7 @@ def _run_transformation(args: argparse.Namespace) -> int:
         payload["figures"] = [str(path) for path in report.figures]
         # A rendered page is not a finished run. Same gate the CLI's report subcommand applies.
         validation = validate_transformation_run(result.run_directory)
-        payload["validation"] = _validation_payload(validation)
+        payload["validation"] = _validation_payload(validation, result.run_directory)
     print(
         json.dumps(
             {
@@ -331,7 +334,7 @@ def _run_report(args: argparse.Namespace) -> int:
         if transformation
         else validate_production_run(args.run_dir)
     )
-    payload = _validation_payload(validation)
+    payload = _validation_payload(validation, Path(args.run_dir).resolve())
     if args.as_json:
         print(json.dumps(payload, indent=2))
     elif validation.valid:
