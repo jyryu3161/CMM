@@ -31,6 +31,30 @@ from dataclasses import dataclass, field, replace
 
 from cobra import Model, Reaction
 
+#: Cofactor pools, keyed by the part of a formula that does not change with protonation or
+#: naming: the counts of carbon, nitrogen, phosphorus and sulfur. This is how the pools are
+#: found, and it is deliberately not by id.
+#:
+#: A model is not obliged to use BiGG ids. Yeast-GEM calls ATP ``s_0434`` and AGORA models
+#: differ again, and an id-matching implementation does not fail on them — it silently finds
+#: nothing, drops the cofactor panel, and treats every hub metabolite as a carbon carrier so
+#: the graph distances become noise. Formulas are the same in every model that has them.
+#:
+#: Sulfur is in the key because coenzyme A and NADP share ``(21, 7, 3)`` and differ only by
+#: it. Within a pool the reduced member is the one carrying one more hydrogen, which is what
+#: NADH is to NAD.
+_POOL_SKELETONS: Mapping[tuple[int, int, int, int], str] = {
+    (10, 5, 3, 0): "ATP",
+    (10, 5, 2, 0): "ADP",
+    (10, 5, 1, 0): "AMP",
+    (21, 7, 2, 0): "NAD_POOL",
+    (21, 7, 3, 0): "NADP_POOL",
+    (21, 7, 3, 1): "COA",
+}
+
+#: Carbon-free formulas resolved directly, for the probe half-reactions.
+_SIMPLE_FORMULAS: Mapping[str, str] = {"H": "PROTON", "H2O": "WATER", "CO2": "CO2"}
+
 #: Metabolites that participate in most reactions and would collapse every graph distance to
 #: 2 if left in. Matched on the id stem, so ``atp_c``/``atp_p``/``atp[c]`` all resolve.
 CURRENCY_STEMS = frozenset(
@@ -61,10 +85,150 @@ CURRENCY_STEMS = frozenset(
 )
 
 #: Cofactor pools reported per reaction. The value is the stem of the "charged" member of the
-#: pair, whose stoichiometric coefficient gives the net production of that pool.
+#: pair, whose stoichiometric coefficient gives the net production of that pool. Used only as
+#: a fallback for a model whose metabolites carry no formulas at all; :func:`resolve_pools` is
+#: the primary route.
 ATP_STEM = "atp"
 NADH_STEM = "nadh"
 NADPH_STEM = "nadph"
+
+
+def _skeleton(metabolite) -> tuple[int, int, int, int] | None:
+    """The ``(C, N, P, S)`` counts of a metabolite's formula, or None when it has none."""
+
+    elements = getattr(metabolite, "elements", None)
+    if not elements:
+        return None
+    return (
+        int(elements.get("C", 0)),
+        int(elements.get("N", 0)),
+        int(elements.get("P", 0)),
+        int(elements.get("S", 0)),
+    )
+
+
+@dataclass(frozen=True)
+class ResolvedPools:
+    """The cofactor metabolites found in one model, and the ones that were not.
+
+    ``missing`` is reported rather than left implicit. A model without an identifiable NADPH
+    pool is a model where the redox reading is partial, and a panel that quietly omits a row
+    reads as "this pool does not limit the product" when it means "this pool was not found".
+    """
+
+    ids: Mapping[str, str]
+    missing: tuple[str, ...]
+    currency: frozenset[str]
+    by_formula: bool
+
+    def has(self, *roles: str) -> bool:
+        return all(role in self.ids for role in roles)
+
+
+def resolve_pools(model: Model) -> ResolvedPools:
+    """Find the cofactor pools and the currency metabolites of any model.
+
+    Formulas first, because they do not depend on a naming convention. When the model carries
+    no formulas at all, fall back to the BiGG id stems in :data:`CURRENCY_STEMS`, and say
+    which route was taken so a caller can report it.
+
+    Within a redox pool the reduced member is the one with one more hydrogen. Between pools,
+    the compartment chosen is the one whose member appears in the most reactions, which is the
+    cytosol in every model where that question has an answer.
+    """
+
+    scored: dict[str, list] = {}
+    simple: dict[str, list] = {}
+    for metabolite in model.metabolites:
+        formula = str(getattr(metabolite, "formula", "") or "")
+        if formula in _SIMPLE_FORMULAS:
+            simple.setdefault(_SIMPLE_FORMULAS[formula], []).append(metabolite)
+            continue
+        skeleton = _skeleton(metabolite)
+        role = _POOL_SKELETONS.get(skeleton) if skeleton else None
+        if role is not None:
+            scored.setdefault(role, []).append(metabolite)
+        # Phosphate: no carbon, one phosphorus. Distinguishes pi from ppi, which has two.
+        elif skeleton == (0, 0, 1, 0):
+            simple.setdefault("PHOSPHATE", []).append(metabolite)
+
+    def busiest(candidates):
+        return (
+            max(candidates, key=lambda m: (len(m.reactions), m.id))
+            if candidates
+            else None
+        )
+
+    ids: dict[str, str] = {}
+    for role, candidates in simple.items():
+        chosen = busiest(candidates)
+        if chosen is not None:
+            ids[role] = chosen.id
+    for role in ("ATP", "ADP", "AMP", "COA"):
+        chosen = busiest(scored.get(role, []))
+        if chosen is not None:
+            ids[role] = chosen.id
+    # A redox pair shares a skeleton; the reduced form carries the extra hydrogen.
+    for pool, oxidised, reduced in (
+        ("NAD_POOL", "NAD", "NADH"),
+        ("NADP_POOL", "NADP", "NADPH"),
+    ):
+        members = scored.get(pool, [])
+        if len(members) < 2:
+            continue
+        compartment = busiest(members).compartment
+        here = [m for m in members if m.compartment == compartment]
+        if len(here) < 2:
+            here = members
+        here.sort(key=lambda m: int((m.elements or {}).get("H", 0)))
+        ids[oxidised] = here[0].id
+        ids[reduced] = here[-1].id
+
+    wanted = (
+        "ATP",
+        "ADP",
+        "NAD",
+        "NADH",
+        "NADP",
+        "NADPH",
+        "PROTON",
+        "WATER",
+        "PHOSPHATE",
+    )
+    missing = tuple(role for role in wanted if role not in ids)
+
+    # Currency: what the carbon skeleton is not. Anything without carbon is a carrier of
+    # charge, water or phosphate rather than of carbon; CO2 is where carbon stops; and the
+    # resolved cofactors carry carbon but are not on the route the product is built along.
+    resolved_ids = set(ids.values())
+    currency = {
+        metabolite.id
+        for metabolite in model.metabolites
+        if not (getattr(metabolite, "elements", None) or {}).get("C")
+        or str(getattr(metabolite, "formula", "") or "") == "CO2"
+        or metabolite.id in resolved_ids
+        or _POOL_SKELETONS.get(_skeleton(metabolite) or (0, 0, 0, 0)) is not None
+    }
+    by_formula = bool(currency) and len(missing) < len(wanted)
+    if not by_formula:
+        # No formulas anywhere: fall back to the id stems, and say so.
+        currency = {
+            metabolite.id
+            for metabolite in model.metabolites
+            if _stem(metabolite.id) in CURRENCY_STEMS
+        }
+    else:
+        # Keep the curated stems as a supplement: they cover carriers a formula cannot
+        # generalise, such as the ubiquinone pool, without being the mechanism.
+        currency |= {
+            metabolite.id
+            for metabolite in model.metabolites
+            if _stem(metabolite.id) in CURRENCY_STEMS
+        }
+    return ResolvedPools(
+        ids=ids, missing=missing, currency=frozenset(currency), by_formula=by_formula
+    )
+
 
 #: A flux smaller than this reads as zero on the screen.
 DISPLAY_EPSILON = 1e-9
@@ -103,10 +267,11 @@ def _stem(metabolite_id: str) -> str:
 
 
 def _net_coefficient(reaction: Reaction, stem: str) -> float:
-    """Net stoichiometric coefficient of a cofactor pool in one reaction.
+    """Net stoichiometric coefficient of a cofactor pool in one reaction, by id stem.
 
     Summed across compartments, because a reaction that consumes cytosolic ATP and produces
-    periplasmic ATP is not ATP-neutral for the purposes of this screen.
+    periplasmic ATP is not ATP-neutral for the purposes of this screen. Retained for a model
+    whose metabolites carry no formulas; :func:`_net_pool` is the formula-based route.
     """
 
     return float(
@@ -114,6 +279,47 @@ def _net_coefficient(reaction: Reaction, stem: str) -> float:
             coefficient
             for metabolite, coefficient in reaction.metabolites.items()
             if _stem(metabolite.id) == stem
+        )
+    )
+
+
+def pool_members(model: Model, representative_id: str) -> frozenset[str]:
+    """Every metabolite that *is* this cofactor, in every compartment.
+
+    Matching the formula skeleton alone is not enough and the failure is silent: NAD and NADH
+    share one, so a reaction converting the first into the second sums to zero and reads as
+    redox-neutral when it produces one NADH. The hydrogen count separates the two, and
+    carrying it through picks up the same species in the periplasm or the mitochondrion.
+    """
+
+    try:
+        representative = model.metabolites.get_by_id(representative_id)
+    except KeyError:  # pragma: no cover - the id came from this model
+        return frozenset()
+    skeleton = _skeleton(representative)
+    hydrogens = int((representative.elements or {}).get("H", 0))
+    return frozenset(
+        metabolite.id
+        for metabolite in model.metabolites
+        if _skeleton(metabolite) == skeleton
+        and int((metabolite.elements or {}).get("H", 0)) == hydrogens
+    )
+
+
+def _net_pool(reaction: Reaction, members: frozenset[str]) -> float:
+    """Net coefficient of one cofactor across a reaction, summed over compartments.
+
+    A reaction that consumes cytosolic ATP and produces periplasmic ATP is not ATP-neutral
+    for the purposes of this screen, so the compartments are summed rather than kept apart.
+    """
+
+    if not members:
+        return 0.0
+    return float(
+        sum(
+            coefficient
+            for metabolite, coefficient in reaction.metabolites.items()
+            if metabolite.id in members
         )
     )
 
@@ -308,7 +514,12 @@ PROBE_RATE = 0.1
 
 
 def cofactor_limitation(
-    model: Model, *, product: str, biomass: str, growth_floor: float
+    model: Model,
+    *,
+    product: str,
+    biomass: str,
+    growth_floor: float,
+    pools: "ResolvedPools | None" = None,
 ) -> dict[str, float]:
     """How much more product one extra unit of each cofactor would buy, per hour.
 
@@ -322,6 +533,10 @@ def cofactor_limitation(
     supply of one pool is offered at :data:`PROBE_RATE`, and the product is maximised with and
     without it. The difference over the rate is the marginal product per unit of that pool.
 
+    The pools are found by formula (see :func:`resolve_pools`), so this works on a model that
+    does not use BiGG ids. A pool the model does not carry is left out of the result, and
+    :attr:`ResolvedPools.missing` names it, because an absent row must not read as a zero.
+
     On anaerobic ``e_coli_core`` the reading changes as a design develops, which is the point.
     Wild type: ATP +0.75, NADPH +0.63, NADH +0.13 — the product is ATP-limited. After the
     knockout design that frees the fermentative NADH sinks: NADH +0.01, NADPH +0.41,
@@ -329,6 +544,50 @@ def cofactor_limitation(
     """
 
     from cobra import Reaction
+
+    if pools is None:
+        pools = resolve_pools(model)
+
+    # Each probe is a mass-balanced half-reaction supplying one pool. Written this way rather
+    # than as a bare source because creating hydrogen from nothing would make the number an
+    # artifact of that rather than a property of the network.
+    recipes: list[tuple[str, dict[str, float]]] = []
+    if pools.has("NAD", "NADH", "PROTON"):
+        recipes.append(
+            (
+                "NADH",
+                {
+                    pools.ids["NAD"]: -1.0,
+                    pools.ids["PROTON"]: -1.0,
+                    pools.ids["NADH"]: 1.0,
+                },
+            )
+        )
+    if pools.has("NADP", "NADPH", "PROTON"):
+        recipes.append(
+            (
+                "NADPH",
+                {
+                    pools.ids["NADP"]: -1.0,
+                    pools.ids["PROTON"]: -1.0,
+                    pools.ids["NADPH"]: 1.0,
+                },
+            )
+        )
+    if pools.has("ADP", "ATP", "PHOSPHATE", "WATER"):
+        recipes.append(
+            (
+                "ATP",
+                {
+                    pools.ids["ADP"]: -1.0,
+                    pools.ids["PHOSPHATE"]: -1.0,
+                    pools.ids["ATP"]: 1.0,
+                    pools.ids["WATER"]: 1.0,
+                },
+            )
+        )
+    if not recipes:
+        return {}
 
     solution = model.slim_optimize(error_value=float("nan"))
     if solution != solution:  # NaN: infeasible, nothing to be marginal about
@@ -344,19 +603,17 @@ def cofactor_limitation(
         base = model.slim_optimize(error_value=float("nan"))
         if base != base:
             return {}
-        for name, stoichiometry in COFACTOR_PROBES.items():
-            try:
-                metabolites = {
-                    model.metabolites.get_by_id(mid): coefficient
-                    for mid, coefficient in stoichiometry.items()
-                }
-            except KeyError:
-                continue  # this model does not carry that pool under these ids
+        for name, stoichiometry in recipes:
             with model:
                 probe = Reaction(f"JEV_PROBE_{name}")
                 probe.bounds = (0.0, PROBE_RATE)
                 model.add_reactions([probe])
-                probe.add_metabolites(metabolites)
+                probe.add_metabolites(
+                    {
+                        model.metabolites.get_by_id(mid): coefficient
+                        for mid, coefficient in stoichiometry.items()
+                    }
+                )
                 model.objective = model.reactions.get_by_id(product)
                 model.objective_direction = "max"
                 supplied = model.slim_optimize(error_value=float("nan"))
@@ -401,8 +658,26 @@ def guaranteed_product(
     return float(flux_range.minimum), float(flux_range.maximum)
 
 
-def cofactor_balance(model: Model, fluxes: Mapping[str, float]) -> CofactorBalance:
-    """ATP/NADH/NADPH turnover at ``fluxes``, and the reaction dominating each side."""
+def cofactor_balance(
+    model: Model,
+    fluxes: Mapping[str, float],
+    pools: "ResolvedPools | None" = None,
+) -> CofactorBalance:
+    """ATP/NADH/NADPH turnover at ``fluxes``, and the reaction dominating each side.
+
+    Pools are matched by formula skeleton, so this reports the same quantities on a model
+    that does not use BiGG ids. A model carrying no formulas falls back to the id stems.
+    """
+
+    if pools is None:
+        pools = resolve_pools(model)
+    members: dict[str, frozenset[str]] = {}
+    if pools.by_formula:
+        for key, role in (("atp", "ATP"), ("nadh", "NADH"), ("nadph", "NADPH")):
+            identifier = pools.ids.get(role)
+            members[key] = (
+                pool_members(model, identifier) if identifier else frozenset()
+            )
 
     totals = {
         "atp_p": 0.0,
@@ -424,7 +699,12 @@ def cofactor_balance(model: Model, fluxes: Mapping[str, float]) -> CofactorBalan
             (NADH_STEM, "nadh"),
             (NADPH_STEM, "nadph"),
         ):
-            rate = _net_coefficient(reaction, stem) * flux
+            net = (
+                _net_pool(reaction, members[key])
+                if pools.by_formula
+                else _net_coefficient(reaction, stem)
+            )
+            rate = net * flux
             if rate > 0:
                 totals[f"{key}_p"] += rate
             else:
@@ -454,7 +734,11 @@ def cofactor_balance(model: Model, fluxes: Mapping[str, float]) -> CofactorBalan
     )
 
 
-def product_distances(model: Model, product_reaction_id: str) -> dict[str, int]:
+def product_distances(
+    model: Model,
+    product_reaction_id: str,
+    currency: frozenset[str] | None = None,
+) -> dict[str, int]:
     """Shortest number of reaction steps from each reaction to the product exchange.
 
     Breadth-first over the reaction/metabolite bipartite graph, with currency metabolites
@@ -465,11 +749,13 @@ def product_distances(model: Model, product_reaction_id: str) -> dict[str, int]:
     metabolites are excluded.
     """
 
+    if currency is None:
+        currency = resolve_pools(model).currency
     product = model.reactions.get_by_id(product_reaction_id)
     by_metabolite: dict[str, list[str]] = {}
     for reaction in model.reactions:
         for metabolite in reaction.metabolites:
-            if _stem(metabolite.id) in CURRENCY_STEMS:
+            if metabolite.id in currency:
                 continue
             by_metabolite.setdefault(metabolite.id, []).append(reaction.id)
 
@@ -479,7 +765,7 @@ def product_distances(model: Model, product_reaction_id: str) -> dict[str, int]:
         reaction_id, depth = queue.popleft()
         reaction = model.reactions.get_by_id(reaction_id)
         for metabolite in reaction.metabolites:
-            if _stem(metabolite.id) in CURRENCY_STEMS:
+            if metabolite.id in currency:
                 continue
             for neighbour in by_metabolite.get(metabolite.id, ()):
                 if neighbour not in distances:
@@ -509,7 +795,8 @@ def carbon_byproducts(
         for metabolite in reaction.metabolites:
             elements = getattr(metabolite, "elements", None) or {}
             carbon = max(carbon, int(elements.get("C", 0)))
-            if _stem(metabolite.id) == "co2":
+            # By formula, so a model that does not call it ``co2_c`` is still handled.
+            if str(getattr(metabolite, "formula", "") or "") == "CO2":
                 carbon = 0
                 break
         if carbon > 0:
@@ -526,6 +813,7 @@ def build_candidates(
     excluded: Iterable[str] = (),
     pinned: Iterable[str] = (),
     limit: int = 24,
+    pools: "ResolvedPools | None" = None,
 ) -> tuple[CandidateEvidence, ...]:
     """Build the board for one tick: the reactions JEV may act on, shortlisted.
 
@@ -585,16 +873,31 @@ def build_candidates(
         elif genes_available and not reaction.genes:
             excluded_ids.add(reaction.id)
 
-    distances = product_distances(model, product_reaction_id)
-    balance = cofactor_balance(model, reference_fluxes)
+    if pools is None:
+        pools = resolve_pools(model)
+    distances = product_distances(model, product_reaction_id, currency=pools.currency)
+    balance = cofactor_balance(model, reference_fluxes, pools)
     atp_total = balance.atp_production or 1.0
+    members = {
+        role: (
+            pool_members(model, pools.ids[role])
+            if pools.by_formula and role in pools.ids
+            else frozenset()
+        )
+        for role in ("ATP", "NADH", "NADPH")
+    }
+
+    def net(reaction, role: str, stem: str) -> float:
+        if pools.by_formula and members[role]:
+            return _net_pool(reaction, members[role])
+        return _net_coefficient(reaction, stem)
 
     evidence: dict[str, CandidateEvidence] = {}
     for reaction in model.reactions:
         if reaction.id in excluded_ids:
             continue
         reference = float(reference_fluxes.get(reaction.id, 0.0))
-        net_atp = _net_coefficient(reaction, ATP_STEM)
+        net_atp = net(reaction, "ATP", ATP_STEM)
         evidence[reaction.id] = CandidateEvidence(
             reaction_id=reaction.id,
             name=reaction.name or reaction.id,
@@ -606,8 +909,8 @@ def build_candidates(
             upper_bound=float(reaction.upper_bound),
             distance_to_product=distances.get(reaction.id),
             net_atp=net_atp,
-            net_nadh=_net_coefficient(reaction, NADH_STEM),
-            net_nadph=_net_coefficient(reaction, NADPH_STEM),
+            net_nadh=net(reaction, "NADH", NADH_STEM),
+            net_nadph=net(reaction, "NADPH", NADPH_STEM),
             atp_production_share=max(net_atp * reference, 0.0) / atp_total,
         )
     if not evidence:
@@ -625,7 +928,9 @@ def build_candidates(
     # dragging in the shared trunk that feeds every branch.
     competing_ids: dict[str, int] = {}
     for byproduct in carbon_byproducts(model, reference_fluxes, product_reaction_id):
-        for reaction_id, depth in product_distances(model, byproduct).items():
+        for reaction_id, depth in product_distances(
+            model, byproduct, currency=pools.currency
+        ).items():
             if depth > BYPRODUCT_RADIUS:
                 continue
             near_product = distances.get(reaction_id)
@@ -706,6 +1011,9 @@ class GameState:
     growth_floor: float
     balance: CofactorBalance
     candidates: tuple[CandidateEvidence, ...]
+    #: Cofactor pools this model did not yield, by role. An absent row must not read as a
+    #: zero, so the screen says which ones could not be found rather than leaving them out.
+    unresolved_pools: tuple[str, ...] = ()
     #: Marginal product per unit of each cofactor pool, from :func:`cofactor_limitation`.
     #: The reading neither MOMA nor OptKnock reports, and usually the one that decides
     #: whether the next move should route carbon or supply a cofactor.
@@ -791,7 +1099,7 @@ class GameState:
                 "text": self.brief.strip(),
             }
         if self.cofactor_limits:
-            payload["what_is_limiting_the_product"] = {
+            limiting: dict[str, object] = {
                 "explanation": (
                     "How much more product one extra unit per hour of each cofactor would "
                     "buy, measured at the current growth rate. The largest number is what "
@@ -802,6 +1110,22 @@ class GameState:
                     name: round(value, 4)
                     for name, value in sorted(self.cofactor_limits.items())
                 },
+            }
+            if self.unresolved_pools:
+                # Named rather than omitted: an absent row reads as "this pool does not limit
+                # the product" when it means "this pool was not found in this model".
+                limiting["not_measured"] = (
+                    "these pools could not be identified in this model, so nothing is "
+                    "claimed about them either way: " + ", ".join(self.unresolved_pools)
+                )
+            payload["what_is_limiting_the_product"] = limiting
+        elif self.unresolved_pools:
+            payload["what_is_limiting_the_product"] = {
+                "not_measured": (
+                    "no cofactor pool could be identified in this model, so nothing is "
+                    "claimed about what limits the product: "
+                    + ", ".join(self.unresolved_pools)
+                )
             }
         if self.notes:
             payload["notes"] = list(self.notes)

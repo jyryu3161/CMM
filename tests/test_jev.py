@@ -1620,3 +1620,311 @@ def test_what_an_amplification_would_buy_is_measured_not_asked_for(
         "every candidate on the board should carry a measured gain"
     )
     assert any("raises the product" in text for text in measured)
+
+
+# ---------------------------------------------------------------------------
+# a model is not obliged to use BiGG ids
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def foreign_id_model():
+    """A model that shares nothing with BiGG but its chemistry.
+
+    Yeast-GEM calls ATP ``s_0434``; AGORA differs again. An implementation that matches ids
+    does not fail on such a model, it silently finds nothing — and a silently empty cofactor
+    reading is worse than none, because an absent row reads as a zero.
+    """
+
+    from cobra import Metabolite, Model, Reaction
+
+    def metabolite(mid, name, formula):
+        return Metabolite(mid, name=name, formula=formula, compartment="c")
+
+    model = Model("foreign_ids")
+    mets = {
+        key: metabolite(key, name, formula)
+        for key, name, formula in [
+            ("s_glc", "glucose", "C6H12O6"),
+            ("s_pyr", "pyruvate", "C3H3O3"),
+            ("s_suc", "succinate", "C4H4O4"),
+            ("s_eth", "ethanol", "C2H6O"),
+            ("s_bio", "biomass precursor", "C5H9NO4"),
+            ("s_atp", "ATP", "C10H12N5O13P3"),
+            ("s_adp", "ADP", "C10H12N5O10P2"),
+            ("s_nad", "NAD", "C21H26N7O14P2"),
+            ("s_nadh", "NADH", "C21H27N7O14P2"),
+            ("s_nadp", "NADP", "C21H25N7O17P3"),
+            ("s_nadph", "NADPH", "C21H26N7O17P3"),
+            ("s_h", "H+", "H"),
+            ("s_h2o", "water", "H2O"),
+            ("s_pi", "phosphate", "HO4P"),
+            ("s_co2", "carbon dioxide", "CO2"),
+        ]
+    }
+    model.add_metabolites(list(mets.values()))
+
+    def reaction(rid, stoichiometry, gene="", lower=0.0, upper=1000.0):
+        built = Reaction(rid, name=rid, lower_bound=lower, upper_bound=upper)
+        built.add_metabolites({mets[k]: v for k, v in stoichiometry.items()})
+        built.gene_reaction_rule = gene
+        model.add_reactions([built])
+
+    reaction("EX_glc", {"s_glc": -1}, lower=-10.0, upper=0.0)
+    reaction(
+        "GLYC",
+        {
+            "s_glc": -1,
+            "s_adp": -2,
+            "s_pi": -2,
+            "s_nad": -2,
+            "s_pyr": 2,
+            "s_atp": 2,
+            "s_nadh": 2,
+            "s_h": 2,
+            "s_h2o": 2,
+        },
+        "g_glyc",
+    )
+    reaction(
+        "ETHF",
+        {"s_pyr": -1, "s_nadh": -1, "s_h": -1, "s_eth": 1, "s_nad": 1, "s_co2": 1},
+        "g_adh",
+    )
+    reaction(
+        "SUCF",
+        {"s_pyr": -2, "s_nadh": -1, "s_h": -1, "s_suc": 1, "s_nad": 1, "s_co2": 2},
+        "g_frd",
+    )
+    reaction(
+        "NADPHG",
+        {"s_nadp": -1, "s_nadh": -1, "s_nadph": 1, "s_nad": 1},
+        "g_thd",
+    )
+    reaction(
+        "BIO",
+        {
+            "s_pyr": -1,
+            "s_atp": -3,
+            "s_nadph": -1,
+            "s_bio": 1,
+            "s_adp": 3,
+            "s_pi": 3,
+            "s_nadp": 1,
+        },
+    )
+    for rid, mid in (
+        ("EX_suc", "s_suc"),
+        ("EX_eth", "s_eth"),
+        ("EX_co2", "s_co2"),
+        ("EX_bio", "s_bio"),
+    ):
+        reaction(rid, {mid: -1})
+    for rid, mid in (("EX_h2o", "s_h2o"), ("EX_h", "s_h"), ("EX_pi", "s_pi")):
+        reaction(rid, {mid: -1}, lower=-1000.0)
+    model.objective = "EX_bio"
+    return model
+
+
+def test_cofactor_pools_are_found_by_formula_not_by_id(foreign_id_model) -> None:
+    from cmm.jev.state import resolve_pools
+
+    pools = resolve_pools(foreign_id_model)
+    assert pools.by_formula is True
+    assert pools.missing == ()
+    assert pools.ids["ATP"] == "s_atp"
+    assert pools.ids["NADH"] == "s_nadh"  # the member with the extra hydrogen
+    assert pools.ids["NAD"] == "s_nad"
+    assert pools.ids["NADPH"] == "s_nadph"
+    assert pools.ids["PHOSPHATE"] == "s_pi"
+
+
+def test_coenzyme_a_is_not_mistaken_for_nadp(ecoli_core) -> None:
+    """They share the (C, N, P) skeleton and differ only by sulfur."""
+
+    from cmm.jev.state import _skeleton, resolve_pools
+
+    assert _skeleton(ecoli_core.metabolites.get_by_id("coa_c"))[:3] == (21, 7, 3)
+    assert _skeleton(ecoli_core.metabolites.get_by_id("nadp_c"))[:3] == (21, 7, 3)
+    pools = resolve_pools(ecoli_core)
+    assert pools.ids["NADP"] == "nadp_c"
+    assert pools.ids["COA"] == "coa_c"
+
+
+def test_a_redox_pair_does_not_cancel_itself_out(ecoli_core) -> None:
+    """The bug the hydrogen count exists to prevent.
+
+    NAD and NADH share a formula skeleton, so matching on it alone makes a reaction that
+    turns one into the other sum to zero — reading as redox-neutral when it produces one
+    NADH.
+    """
+
+    from cmm.jev.state import _net_pool, pool_members
+
+    nadh = pool_members(ecoli_core, "nadh_c")
+    assert nadh == frozenset({"nadh_c"}), "the oxidised partner must not be in the set"
+    assert _net_pool(ecoli_core.reactions.get_by_id("GAPD"), nadh) == pytest.approx(1.0)
+
+
+def test_the_formula_route_reproduces_the_id_route(anaerobic_core) -> None:
+    """A generalisation that changed the answers would not be one."""
+
+    from dataclasses import replace as dataclass_replace
+
+    from cmm.jev.state import cofactor_balance, product_distances, resolve_pools
+
+    fluxes = pfba(anaerobic_core).fluxes
+    pools = resolve_pools(anaerobic_core)
+    by_formula = cofactor_balance(anaerobic_core, fluxes, pools).to_payload()
+    by_id = cofactor_balance(
+        anaerobic_core, fluxes, dataclass_replace(pools, by_formula=False)
+    ).to_payload()
+    assert by_formula == by_id
+
+    from cmm.jev.state import CURRENCY_STEMS, _stem
+
+    curated = frozenset(
+        m.id for m in anaerobic_core.metabolites if _stem(m.id) in CURRENCY_STEMS
+    )
+    assert product_distances(anaerobic_core, "EX_succ_e") == product_distances(
+        anaerobic_core, "EX_succ_e", currency=curated
+    )
+
+
+def test_the_whole_loop_runs_on_a_model_with_foreign_ids(
+    foreign_id_model, tmp_path
+) -> None:
+    """The board, the cofactor reading and the moves, on a model CMM has never seen."""
+
+    from cobra.io import write_sbml_model
+
+    from cmm.jev.state import build_candidates, cofactor_limitation
+
+    limits = cofactor_limitation(
+        foreign_id_model, product="EX_suc", biomass="EX_bio", growth_floor=0.0
+    )
+    assert set(limits) == {"NADH", "NADPH", "ATP"}
+
+    fluxes = pfba(foreign_id_model).fluxes
+    board = build_candidates(
+        foreign_id_model,
+        product_reaction_id="EX_suc",
+        reference_fluxes=fluxes,
+        current_fluxes=fluxes,
+        limit=8,
+    )
+    ids = {candidate.reaction_id for candidate in board}
+    assert "SUCF" in ids, "the reaction that makes the product must be on the board"
+    assert "ETHF" in ids, "the branch competing for the same NADH must be too"
+    # The cofactor arithmetic has to be right, not merely present: a share above 100% of
+    # total production is a number that cannot exist, and was what a cancelled pool produced.
+    for candidate in board:
+        assert 0.0 <= candidate.atp_production_share <= 1.0 + 1e-9
+
+    path = tmp_path / "foreign.xml"
+    write_sbml_model(foreign_id_model, str(path))
+    config = JevConfig(
+        model_path=path,
+        product="EX_suc",
+        biomass="EX_bio",
+        rounds=1,
+        steps_per_round=2,
+        growth_floor=0.0,
+        candidate_limit=8,
+        run_moma=False,
+        seed_with_strain_design=False,
+        run_baseline_comparison=False,
+    )
+    result = run_jev_design(config, client=ScriptedClient([("ETHF", "knockout")]))
+    assert result.ticks
+    assert result.provenance["cofactor_pools_resolved_by"] == "formula"
+    assert result.provenance["cofactor_pools_not_found"] == []
+
+
+def test_a_model_without_formulas_says_so_rather_than_going_quiet(toy_model) -> None:
+    """Silence is the failure mode worth preventing: a missing pool must be named."""
+
+    from cmm.jev.state import resolve_pools
+
+    for metabolite in toy_model.metabolites:
+        metabolite.formula = None
+    pools = resolve_pools(toy_model)
+    assert pools.by_formula is False
+    assert pools.missing, (
+        "every pool is unfound here, and the run has to be able to say so"
+    )
+
+
+def test_a_literature_lookup_must_name_its_organism() -> None:
+    """A default here would ask the published record about the wrong species."""
+
+    with pytest.raises(ValueError, match="needs organism"):
+        JevConfig(model_path="m.xml", product="EX_succ_e", enable_web_research=True)
+    # Without a lookup there is nothing to be wrong about, so nothing is required.
+    assert JevConfig(model_path="m.xml", product="EX_succ_e").organism == ""
+    assert (
+        JevConfig(
+            model_path="m.xml",
+            product="EX_succ_e",
+            enable_web_research=True,
+            organism="Saccharomyces cerevisiae",
+        ).organism
+        == "Saccharomyces cerevisiae"
+    )
+
+
+def test_nothing_in_the_question_set_assumes_one_organism_or_one_product(
+    anaerobic_core,
+) -> None:
+    """The wording has to carry over to another strain and another target.
+
+    The vocabulary is metabolic, not organism-specific: carbon, reducing power, ATP, growth.
+    The only place a species appears is the literature prompt, which takes it as a parameter.
+    """
+
+    fluxes = pfba(anaerobic_core).fluxes
+    board = build_candidates(
+        anaerobic_core,
+        product_reaction_id="EX_succ_e",
+        reference_fluxes=fluxes,
+        current_fluxes=fluxes,
+        limit=8,
+    )
+    question_set = get_question_set()
+    target = question_set.target_question(
+        board,
+        product="EX_lac__D_e",
+        growth_floor=0.2,
+        allow_undo=False,
+        allow_look=True,
+    )["target"]
+    action = question_set.action_question(
+        board[0], product="EX_lac__D_e", growth_floor=0.2, allow_look=False
+    )
+
+    # Only the wording this package authors. A criterion naming one reaction carries that
+    # reaction's own name from the model — "succinyl-CoA synthetase" is data, not an
+    # assumption — so the board's labels are excluded and the move vocabulary is not.
+    authored = " ".join(
+        [
+            str(target["instructions"]),
+            str(target["criteria"]["end_round"]),
+            *(str(question["instructions"]) for question in action.values()),
+            *(
+                str(value)
+                for question in action.values()
+                for value in (
+                    question["criteria"].values()
+                    if isinstance(question["criteria"], dict)
+                    else question["criteria"]
+                )
+            ),
+        ]
+    )
+    for assumption in ("coli", "succinate", "glucose", "anaerobic", "yeast", "acetate"):
+        assert assumption not in authored.lower(), (
+            f"the question set should not assume {assumption!r}"
+        )
+    # The product and the floor it was given are what it asks about.
+    assert "EX_lac__D_e" in authored
+    assert "0.2" in authored

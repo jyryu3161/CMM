@@ -95,6 +95,30 @@ Plus:
   not permission: it cannot widen the move vocabulary, name a reaction outside the model, or
   lift the growth floor CMM enforces, so the worst a mistaken brief can do is waste steps.
 
+## Another organism, another product
+
+Nothing in the agent's vocabulary is specific to *E. coli* or to succinate. The moves are
+metabolic — carbon, reducing power, ATP, growth — and the product, the growth floor and the
+board are all parameters. Two things had to be fixed before that was actually true:
+
+**Cofactor pools are found by formula, not by id.** Yeast-GEM calls ATP `s_0434`; AGORA
+models differ again. An implementation that matches `atp_c` does not *fail* on those — it
+silently finds nothing, drops the cofactor reading, and treats every hub metabolite as a
+carbon carrier so the graph distances become noise. Pools are identified instead by the part
+of a formula that does not change with protonation or naming: the counts of carbon, nitrogen,
+phosphorus and sulfur. Sulfur is in the key because coenzyme A and NADP share `(21, 7, 3)`
+and differ only by it, and within a redox pair the reduced member is the one carrying one
+more hydrogen — matching the skeleton alone makes NAD and NADH cancel, so a reaction that
+produces one NADH reads as redox-neutral.
+
+On `e_coli_core` the formula route reproduces the id route exactly: same net coefficient on
+every reaction, same graph distances, same turnover figures. A pool that cannot be identified
+is **named on the screen** under `not_measured`, because an absent row reads as a zero.
+
+**The organism is required for a literature lookup and has no default.** Asking the published
+record about the wrong species returns an answer that is confident and wrong, so
+`enable_web_research` without `organism` is refused rather than guessed at.
+
 ## The board
 
 Composed from four slates rather than one ranking, because one ranking demonstrably fails:

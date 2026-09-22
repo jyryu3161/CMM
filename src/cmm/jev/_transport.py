@@ -166,17 +166,24 @@ class JevUsage:
 def resolve_api_key(api_key: str | None = None) -> str:
     """Return the key to authenticate with, from the argument or the environment.
 
-    The key is read from ``OPENROUTER_API_KEY`` and is never written to a config file, a run
-    bundle or an error message. An explicit argument exists for a caller that already holds
-    one (the desktop app reads the same variable), not as an invitation to hard-code it.
+    ``OPENROUTER_API_KEY`` wins; a key saved from the desktop app is the fallback; otherwise
+    this raises with both options named. The key is never written to a run bundle or an error
+    message. An explicit argument exists for a caller that already holds one, not as an
+    invitation to hard-code it.
     """
 
-    key = api_key if api_key is not None else os.environ.get(_ENV_KEY, "")
-    key = key.strip()
+    from cmm.jev.credentials import key_path, stored_key
+
+    key = (api_key if api_key is not None else os.environ.get(_ENV_KEY, "")).strip()
+    if not key:
+        # A key saved from the desktop app. The environment wins when both exist, so a key
+        # exported for one session is never overridden by one saved months ago.
+        key = stored_key()
     if not key:
         raise JevTransportError(
-            f"no OpenRouter API key: set the {_ENV_KEY} environment variable "
-            "(the JEV agent is the only part of CMM that needs one)"
+            f"no OpenRouter API key: set the {_ENV_KEY} environment variable, or save one "
+            f"from the JEV menu in the desktop app (it is kept at {key_path()}). "
+            "The JEV agent is the only part of CMM that needs one."
         )
     return key
 

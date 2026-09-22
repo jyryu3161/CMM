@@ -83,6 +83,7 @@ from cmm.jev.state import (
     cofactor_balance,
     cofactor_limitation,
     guaranteed_product,
+    resolve_pools,
 )
 
 #: How many times the identical move may land the identical way before the round is cut
@@ -137,7 +138,11 @@ class JevConfig:
     solver: str | None = None
     medium: Medium | str | None = None
     condition: Condition | None = None
-    organism: str = "Escherichia coli"
+    #: The organism the model represents. Only used for the literature lookup, and required
+    #: when that is on: a default would ask the published record about the wrong species and
+    #: return an answer that is confident and wrong. Left empty when no lookup is done,
+    #: because guessing it from a model id is not a thing that works.
+    organism: str = ""
     #: What the person running this knows and the model does not: published targets for this
     #: product, a growth rate the strain has to hold, a cofactor they believe is decisive, a
     #: reaction they want left alone. Shown to the agent under ``your_brief`` on every step.
@@ -232,6 +237,11 @@ class JevConfig:
             raise ValueError("max_cost_usd must be positive")
         if self.max_research_calls < 0:
             raise ValueError("max_research_calls must be non-negative")
+        if self.enable_web_research and not self.organism.strip():
+            raise ValueError(
+                "enable_web_research needs organism: a literature lookup asks about a named "
+                "species, and the wrong one returns evidence that is confident and wrong"
+            )
         get_question_set(self.question_set)
 
     @classmethod
@@ -335,6 +345,9 @@ class TickRecord:
     n_active_interventions: int = 0
     decision_cost_usd: float = 0.0
     decision_latency_s: float = 0.0
+    #: What the agent weighed at the second stage, and by how much. Kept for the same reason
+    #: as the first stage's ranking: the runner-up is often the interesting row.
+    action_ranking: tuple[tuple[str, float], ...] = ()
 
     def to_row(self) -> dict[str, object]:
         return {
@@ -727,6 +740,22 @@ def run_jev_design(
 
     theoretical = _theoretical_max_yield(model, product, config.substrate, notes)
 
+    # Resolved once: the cofactor pools and the currency metabolites of *this* model, found
+    # by formula so a model that does not use BiGG ids is handled rather than silently
+    # mis-read. What could not be found is reported, never left implicit.
+    pools = resolve_pools(model)
+    if pools.missing:
+        notes.append(
+            "these cofactor pools could not be identified in this model, so the run makes "
+            f"no claim about them: {', '.join(pools.missing)}"
+            + (
+                ""
+                if pools.by_formula
+                else " (the model carries no formulas, so identification fell back to BiGG "
+                "id stems)"
+            )
+        )
+
     board = _Board(model=model, reference=reference, product=product, biomass=biomass)
 
     if config.seed_with_strain_design:
@@ -802,6 +831,7 @@ def run_jev_design(
                     ],
                     pinned=board.scans.design_notes,
                     limit=config.candidate_limit,
+                    pools=pools,
                 )
             )
             if not candidates:
@@ -826,13 +856,15 @@ def run_jev_design(
                 theoretical_max_yield=theoretical,
                 molar_yield=None,
                 growth_floor=config.growth_floor,
-                balance=cofactor_balance(board.model, current_fluxes),
+                balance=cofactor_balance(board.model, current_fluxes, pools),
+                unresolved_pools=pools.missing,
                 cofactor_limits=(
                     cofactor_limitation(
                         board.model,
                         product=product,
                         biomass=biomass,
                         growth_floor=config.growth_floor,
+                        pools=pools,
                     )
                     if config.measure_cofactor_limits
                     else {}
@@ -970,6 +1002,10 @@ def run_jev_design(
             else ("moma_l1" if use_linear_moma else "moma_l2")
         ),
         "wild_type_reference": "pfba",
+        "cofactor_pools_resolved_by": "formula"
+        if pools.by_formula
+        else "bigg_id_stems",
+        "cofactor_pools_not_found": list(pools.missing),
     }
 
     # The design the run ended on, captured before the comparison below strips the board
@@ -1088,6 +1124,8 @@ def _play_tick(
     cost = stage1.cost_usd
     latency = stage1.latency_s
 
+    action_ranking: tuple[tuple[str, float], ...] = ()
+
     def frame(
         *,
         action: str | None,
@@ -1108,6 +1146,7 @@ def _play_tick(
             target=target,
             target_confidence=target_answer.confidence,
             target_ranking=ranking,
+            action_ranking=action_ranking,
             action=action,
             action_confidence=action_confidence,
             benefit_score=benefit,
@@ -1240,6 +1279,7 @@ def _play_tick(
     latency += stage2.latency_s
 
     action_answer = stage2[ACTION_KEY]
+    action_ranking = action_answer.ranked()
     action_name = action_answer.choice
     benefit = _safe_score(stage2, BENEFIT_KEY)
     risk = _safe_noul(stage2, RISK_KEY)

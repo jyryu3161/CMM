@@ -610,6 +610,10 @@ class CmmMainWindow(JevTabMixin, QMainWindow):
         jev.addSeparator()
         jev.addAction("Show Run Progress", self.show_jev_progress)
         jev.addAction("Show Last Decision", self.show_jev_last_decision)
+        jev.addSeparator()
+        jev.addAction("Set API Key…", self.set_jev_api_key)
+        jev.addAction("Clear API Key", self.clear_jev_api_key)
+        jev.addAction("Where is my key?", self.show_jev_api_key_status)
 
         model_menu = bar.addMenu("&Model")
         model_menu.addAction("Model Info…", self._show_model_info)

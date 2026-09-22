@@ -37,6 +37,7 @@ from cmm.jev._transport import (
     noul_question,
     score_question,
 )
+from cmm.jev.credentials import clear_key, key_path, key_source, save_key, stored_key
 from cmm.jev.actions import (
     ACT_ACTIONS,
     ACTION_CATALOGUE,
@@ -99,10 +100,15 @@ __all__ = [
     "build_candidates",
     "build_intervention",
     "choice_question",
+    "clear_key",
     "cofactor_balance",
     "get_question_set",
+    "key_path",
+    "key_source",
     "noul_question",
     "product_distances",
     "run_jev_design",
+    "save_key",
+    "stored_key",
     "score_question",
 ]

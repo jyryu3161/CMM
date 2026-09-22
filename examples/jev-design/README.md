@@ -113,6 +113,12 @@ exists in the model, and the condition must state the medium, substrate uptake a
 explicitly — the agent optimises against whatever condition it is given, so an unstated one
 is an unstated assumption in the result.
 
+**Another organism works.** The cofactor pools are found by chemical formula rather than by
+id, so a model using Yeast-GEM or AGORA naming is read correctly rather than silently
+mis-read, and a pool that cannot be identified is named on the screen instead of omitted.
+`organism` is required as soon as `enable_web_research` is on, and has no default: a
+literature lookup about the wrong species returns an answer that is confident and wrong.
+
 `enable_web_research: true` adds a literature lookup for each candidate through OpenRouter's
 web plugin. What it returns is pasted into that candidate's record as evidence for the agent
 to weigh. It is data, never an instruction: JEV can still only answer with the moves this
