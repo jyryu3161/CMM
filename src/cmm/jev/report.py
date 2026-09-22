@@ -258,6 +258,40 @@ def render_agent_report(result) -> str:
     )
     verdict = (result.baseline_summary() or {}).get("verdict", "")
 
+    # Why each move that stuck was chosen, and over what. The whole ranking is in
+    # 02_game/candidate_rankings.csv and every probability is in the transcript, but neither is
+    # a thing anyone reads — and this is the one thing the agent has that a deterministic
+    # designer does not, so leaving it unreadable gives the difference away.
+    kept = {i.reaction_id for i in result.best_interventions}
+    decisions = _table(
+        ["Move", "Chose", "Over", "Decided by", "What CMM measured"],
+        [
+            (
+                f"R{tick.round_index}T{tick.tick_index}",
+                # A whole-board move names itself as its own target, so "adopt_best_design on
+                # adopt_best_design" is the same word twice rather than a move on a reaction.
+                (
+                    str(tick.action)
+                    if tick.action == tick.target
+                    else f"{tick.action} on {tick.target}"
+                )
+                + (
+                    f" ({tick.target_confidence:.0%} confident)"
+                    if tick.target_confidence is not None
+                    else ""
+                ),
+                runner_up or "nothing else was on the board",
+                "—" if margin is None else f"{margin:.0%}",
+                tick.reason,
+            )
+            for tick in result.ticks
+            for runner_up, _, margin in [tick.runner_up()]
+            if tick.outcome == "applied"
+            and tick.intervention is not None
+            and tick.intervention.reaction_id in kept
+        ],
+    )
+
     usage = dict(summary["usage"])
     provenance = _table(
         ["Field", "Value"],
@@ -282,6 +316,15 @@ def render_agent_report(result) -> str:
 <p>Each line is a gene edit. Deleting or weakening a gene stops or slows every reaction that
 gene alone carries, and where that is more than the reaction named, the line says so.</p>
 {_lines(summary["best_design"] or ["no interventions survived the rules"])}
+
+<h2>How each of those moves was chosen</h2>
+<p>The agent answers by picking from criteria CMM supplies, and it returns a probability for
+every one of them, so the move it nearly made instead is on the record. That is the row to read
+when a design looks surprising: a move chosen over its alternative by two points and one chosen
+by sixty are different kinds of decision, and only one of them is worth arguing with. The full
+ranking for every step is in <code>02_game/candidate_rankings.csv</code>, and every request and
+response is in <code>04_agent/transcript.jsonl</code>.</p>
+{decisions}
 
 {_design_space_figure(result)}
 

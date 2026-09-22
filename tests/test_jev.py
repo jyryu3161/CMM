@@ -3382,3 +3382,158 @@ def test_a_knockdown_that_cannot_be_expressed_is_refused_not_crashed(
         build_intervention(
             anaerobic_core, "ATPM", ACTION_CATALOGUE["knockdown_50"], reference
         )
+
+
+# ---------------------------------------------------------------------------
+# what the agent has that the deterministic methods do not
+# ---------------------------------------------------------------------------
+
+
+def test_the_control_searches_as_deep_as_the_agent_may_play(anaerobic_core) -> None:
+    """A control that stops at one knockdown does not test an agent allowed three.
+
+    One knockdown is exhaustive and the row says so; past that it is greedy, which is the
+    honest name and the right shape — exhaustive search at depth three over this board is the
+    cost the agent exists to avoid, so beating greedy is the least the judgement has to do.
+    """
+
+    pytest.importorskip("straindesign")
+    from cmm.jev.benchmark import _is_sweep, compare_with_baselines
+
+    def sweep(depth: int):
+        rows = compare_with_baselines(
+            anaerobic_core,
+            product="EX_succ_e",
+            biomass="Biomass_Ecoli_core",
+            growth_floor=0.05,
+            max_knockouts=3,
+            max_solutions=5,
+            max_knockdowns=depth,
+            seed=0,
+            run_single_gene_screen=False,
+        )
+        return next(row for row in rows if _is_sweep(row.method))
+
+    shallow = sweep(1)
+    deep = sweep(3)
+
+    assert shallow.method == "best deterministic design + one knockdown (exhaustive)"
+    assert "exhaustive" in shallow.note
+    assert deep.method == "best deterministic design + 3 knockdowns (greedy)"
+    assert "greedily" in deep.note
+
+    # Searching deeper cannot do worse: greedy keeps its first move.
+    assert deep.guaranteed_product >= shallow.guaranteed_product - 1e-9
+    assert len(deep.design) > len(shallow.design)
+
+
+def test_no_baseline_may_use_what_the_run_put_off_limits(anaerobic_core) -> None:
+    """Every method answers the same question, or the table is not a comparison.
+
+    The agent is refused an off-limits reaction before it ever sees the board. A deterministic
+    row that used one would be winning on a design the person running this said they would not
+    build, which is not a comparison but two different questions in one column.
+    """
+
+    pytest.importorskip("straindesign")
+    from cmm.jev.benchmark import compare_with_baselines
+
+    rows = compare_with_baselines(
+        anaerobic_core,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        growth_floor=0.05,
+        max_knockouts=3,
+        max_solutions=10,
+        max_knockdowns=2,
+        # THD2 carries the design every deterministic method reaches for first.
+        forbidden=frozenset({"THD2"}),
+        seed=0,
+        run_single_gene_screen=False,
+    )
+    for row in rows:
+        assert "THD2" not in row.constrained, row.method
+        assert not any("THD2" in entry for entry in row.design), row.method
+
+    optknock = next(row for row in rows if row.method == "OptKnock")
+    assert optknock.status == "optimal"
+    assert "off-limits" in optknock.note
+
+
+def test_a_design_lethal_as_a_gene_edit_is_not_the_designers_answer(
+    anaerobic_core,
+) -> None:
+    """The designer optimises over reactions; the row has to report a strain.
+
+    With THD2 off limits, OptKnock's next answer by guaranteed product is
+    ``ACALD, D_LACt2, TKT2`` — proven for 9.275 on bare reactions, and growth zero once the
+    genes that achieve it are deleted, because the gene set stops other reactions too. Scoring
+    that row would credit the designer with a strain nobody can build, and would hand the
+    control a base it cannot stand on.
+    """
+
+    pytest.importorskip("straindesign")
+    from cmm.jev.benchmark import _is_sweep, compare_with_baselines
+
+    rows = compare_with_baselines(
+        anaerobic_core,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        growth_floor=0.05,
+        max_knockouts=3,
+        max_solutions=10,
+        max_knockdowns=2,
+        forbidden=frozenset({"THD2"}),
+        seed=0,
+        run_single_gene_screen=False,
+    )
+    optknock = next(row for row in rows if row.method == "OptKnock")
+    assert optknock.growth >= 0.05, "the reported design has to be a viable strain"
+    assert "TKT2" not in optknock.design
+    assert "resolved to gene edits" in optknock.note
+
+    # And the control could stand on it.
+    control = next(row for row in rows if _is_sweep(row.method))
+    assert control.status == "optimal"
+    assert control.growth >= 0.05
+
+
+def test_a_move_records_what_it_was_chosen_over(anaerobic_core_path) -> None:
+    """The runner-up is the one thing the agent has that a designer does not.
+
+    Every answer carries a probability for every criterion the caller offered, so the move
+    nearly made instead is on the record. A move chosen over its alternative by two points and
+    one chosen by sixty are different kinds of decision, and burying both in a 55 KB transcript
+    gives that difference away.
+    """
+
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        condition=ANAEROBIC,
+        rounds=1,
+        steps_per_round=3,
+        growth_floor=0.01,
+        run_moma=False,
+        run_baseline_comparison=False,
+        seed_with_strain_design=False,
+        screen_interventions=False,
+    )
+    result = run_jev_design(
+        config, client=ScriptedClient([("PFL", "knockout"), ("end_round", None)])
+    )
+    frame = result.ticks_frame()
+    for column in ("runner_up", "runner_up_confidence", "decided_by"):
+        assert column in frame.columns
+
+    first = result.ticks[0]
+    runner_up, confidence, margin = first.runner_up()
+    assert runner_up is not None and runner_up != first.target
+    assert confidence is not None and margin is not None
+    # The margin is the distance between first and second, so it is never negative.
+    assert margin >= 0.0
+
+    from cmm.jev.report import render_agent_report
+
+    page = render_agent_report(result)
+    assert "How each of those moves was chosen" in page

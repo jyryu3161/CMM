@@ -23,7 +23,7 @@ comparison.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 import time
 
@@ -42,9 +42,18 @@ _SINGLE_GENE_LABEL = "best single gene deletion"
 _AGENT_LABEL = "JEV agent"
 
 #: The control the agent has to beat to have contributed anything: the best deterministic
-#: design plus one knockdown, chosen by exhausting every knockdown the agent could have made.
-#: Same vocabulary, same growth floor, same gene resolution — no judgement anywhere in it.
+#: design plus the knockdowns a plain search finds on top of it, as deep as the agent's own
+#: knockdown budget. Same vocabulary, same growth floor, same gene resolution, same off-limits
+#: set — no judgement anywhere in it.
 _SWEEP_LABEL = "best deterministic design + one knockdown (exhaustive)"
+
+#: What every depth of that label starts with, since the label carries the depth and so cannot
+#: be matched by equality.
+_SWEEP_PREFIX = "best deterministic design + "
+
+
+def _is_sweep(method: str) -> bool:
+    return method.startswith(_SWEEP_PREFIX)
 
 
 @dataclass(frozen=True)
@@ -213,6 +222,8 @@ def compare_with_baselines(
     jev_interventions: Sequence[Intervention] = (),
     max_knockouts: int = 3,
     max_solutions: int = 5,
+    max_knockdowns: int = 1,
+    forbidden: Collection[str] = (),
     seed: int = 0,
     run_single_gene_screen: bool = True,
 ) -> tuple[BaselineRow, ...]:
@@ -221,6 +232,16 @@ def compare_with_baselines(
     ``model`` must already carry the condition the JEV run used; every method is given the
     same one. The row order is the order they are reported in, wild type first so every other
     number has something to be a change from.
+
+    ``forbidden`` is the run's ``off_limits`` set, already resolved to reaction ids. Every
+    method here is held to it, not just the agent. Without that the table compares answers to
+    two different questions: the agent was refused a reaction the person running this said they
+    would not build, and OptKnock was not, so a deterministic row could win on a design nobody
+    asked for. Each row says how much of its own search the constraint removed.
+
+    ``max_knockdowns`` is the agent's own knockdown budget, and it sets how deep the
+    exhaustive/greedy control searches. A control that stops at one knockdown while the agent
+    may play three is not testing the agent at the depth it plays.
     """
 
     rows: list[BaselineRow] = []
@@ -249,8 +270,9 @@ def compare_with_baselines(
         )
     )
 
+    barred = frozenset(forbidden)
     if run_single_gene_screen:
-        keep(*_single_gene_row(model, product, biomass, growth_floor))
+        keep(*_single_gene_row(model, product, biomass, growth_floor, barred))
 
     for label, solver in (("OptKnock", "optknock"), ("RobustKnock", "robustknock")):
         keep(
@@ -264,6 +286,7 @@ def compare_with_baselines(
                 max_knockouts=max_knockouts,
                 max_solutions=max_solutions,
                 seed=seed,
+                forbidden=barred,
             )
         )
 
@@ -272,7 +295,12 @@ def compare_with_baselines(
     proven = [
         row
         for row in rows
-        if row.deterministic and row.design and row.status == "optimal"
+        if row.deterministic
+        and row.design
+        and row.status == "optimal"
+        # A base the control cannot stand on is not a base: a design below the growth floor
+        # makes every knockdown on top of it infeasible before it is tried.
+        and row.growth >= growth_floor
     ]
     if proven:
         base = max(proven, key=lambda row: row.product_flux)
@@ -285,6 +313,8 @@ def compare_with_baselines(
                 base_label=base.method,
                 base_design=base.design,
                 base_bounds=design_bounds[base.method],
+                max_knockdowns=max_knockdowns,
+                forbidden=barred,
             )
         )
 
@@ -297,7 +327,11 @@ def compare_with_baselines(
         for intervention in jev_interventions
         for rid, low, high in intervention.bounds
     }
-    keep(*_amplification_headroom_row(model, product, biomass, growth_floor, bounds))
+    keep(
+        *_amplification_headroom_row(
+            model, product, biomass, growth_floor, bounds, forbidden=barred
+        )
+    )
 
     if jev_interventions:
         solution = _evaluate(model, bounds)
@@ -393,7 +427,8 @@ def _containing_design(row: BaselineRow, rows: Sequence[BaselineRow]) -> str | N
         if other is not row
         and other.deterministic
         and other.constrained
-        and other.method not in (_HEADROOM_LABEL, _SWEEP_LABEL)
+        and other.method != _HEADROOM_LABEL
+        and not _is_sweep(other.method)
         and set(other.constrained) < mine
     ]
     # Only the largest ones. OptKnock's design contains the best single deletion here, so
@@ -409,7 +444,11 @@ def _containing_design(row: BaselineRow, rows: Sequence[BaselineRow]) -> str | N
 
 
 def _single_gene_row(
-    model: Model, product: str, biomass: str, growth_floor: float
+    model: Model,
+    product: str,
+    biomass: str,
+    growth_floor: float,
+    forbidden: Collection[str] = (),
 ) -> tuple[BaselineRow, dict[str, tuple[float, float]]]:
     """Best single-gene deletion, chosen by the MOMA screen and scored under pFBA.
 
@@ -456,6 +495,17 @@ def _single_gene_row(
         for row in screen
         if row.status == "optimal" and row.objective >= growth_floor
     ]
+    # Held to the same off-limits set as the agent: a gene whose loss stops a reaction the
+    # person running this will not touch is not an available deletion for anyone.
+    barred = 0
+    if forbidden:
+        kept = []
+        for row in viable:
+            if set(_gene_deletion_bounds(model, row.target_id)) & set(forbidden):
+                barred += 1
+                continue
+            kept.append(row)
+        viable = kept
     viable.sort(key=lambda row: (-row.product_flux, row.target_id))
     elapsed = time.perf_counter() - started
     if not viable:
@@ -468,7 +518,10 @@ def _single_gene_row(
                 seconds=elapsed,
                 deterministic=True,
                 status="none viable",
-                note=f"no single deletion of {len(screen)} held the growth floor",
+                note=(
+                    f"no single deletion of {len(screen)} held the growth floor"
+                    + (f"; {barred} were off limits" if barred else "")
+                ),
             ),
             {},
         )
@@ -489,6 +542,7 @@ def _single_gene_row(
                 f"best of {len(screen)} genes screened, chosen on the MOMA-L2 screen "
                 f"({best.product_flux:.4g} product at the minimal-adjustment state) and "
                 "re-scored here under pFBA like every other row"
+                + (f"; {barred} genes were off limits" if barred else "")
             ),
         ),
         bounds,
@@ -506,6 +560,7 @@ def _strain_design_row(
     max_knockouts: int,
     max_solutions: int,
     seed: int,
+    forbidden: Collection[str] = (),
 ) -> tuple[BaselineRow, dict[str, tuple[float, float]]]:
     """The designer's best design by guaranteed product, re-scored under pFBA.
 
@@ -558,10 +613,78 @@ def _strain_design_row(
             {},
         )
 
-    # CMM's own rule: rank designs by guaranteed, not maximum, product.
-    best = max(result.designs, key=lambda design: design.guaranteed_product)
-    bounds = _gene_resolved_bounds(model, best.knockouts)
-    solution = _evaluate(model, bounds)
+    # Held to the same off-limits set as the agent. The designers take no exclusion argument,
+    # so the constraint is applied to their answers: a design reaching through a reaction the
+    # run forbade is discarded rather than scored, and the count is reported so a reader can
+    # see how much of the designer's search the constraint removed.
+    available = list(result.designs)
+    barred = 0
+    if forbidden:
+        available = [
+            design
+            for design in result.designs
+            if not set(design.knockouts) & set(forbidden)
+        ]
+        barred = len(result.designs) - len(available)
+    if not available:
+        return (
+            BaselineRow(
+                method=label,
+                design=(),
+                product_flux=float("nan"),
+                growth=float("nan"),
+                seconds=elapsed,
+                deterministic=True,
+                status="all off limits",
+                note=(
+                    f"every one of {label}'s {len(result.designs)} designs reaches through a "
+                    "reaction this run put off limits. Raise max_solutions to search further, "
+                    "or accept that the designer has no answer under this constraint"
+                ),
+            ),
+            {},
+        )
+
+    # CMM's own rule: rank designs by guaranteed, not maximum, product — and then take the
+    # best one that is still a strain once its knockouts are resolved to gene edits.
+    #
+    # The designer optimises over bare reactions. The gene that achieves a deletion often stops
+    # other reactions too, and the design that looked best on reactions can be lethal as a gene
+    # edit: with THD2 off limits here, OptKnock's next answer (ACALD, D_LACt2, TKT2) is proven
+    # for 9.275 on reactions and drops growth to zero as genes. Reporting that row as the
+    # method's result would credit the designer with a strain nobody can build, and would hand
+    # the control a base it cannot stand on.
+    ranked = sorted(available, key=lambda design: -design.guaranteed_product)
+    chosen = None
+    lethal = 0
+    for design in ranked:
+        candidate_bounds = _gene_resolved_bounds(model, design.knockouts)
+        candidate = _evaluate(model, candidate_bounds)
+        if candidate.status == "optimal" and (
+            float(candidate.fluxes.get(biomass, 0.0)) >= growth_floor
+        ):
+            chosen = (design, candidate_bounds, candidate)
+            break
+        lethal += 1
+    if chosen is None:
+        return (
+            BaselineRow(
+                method=label,
+                design=(),
+                product_flux=float("nan"),
+                growth=float("nan"),
+                seconds=elapsed,
+                deterministic=True,
+                status="lethal as gene edits",
+                note=(
+                    f"all {len(ranked)} of {label}'s designs hold the growth floor as bare "
+                    "reaction knockouts and breach it once resolved to the gene edits that "
+                    "achieve them, so none of them is a strain"
+                ),
+            ),
+            {},
+        )
+    best, bounds, solution = chosen
     collateral = sorted(set(bounds) - set(best.knockouts))
     return (
         BaselineRow(
@@ -574,9 +697,20 @@ def _strain_design_row(
             status=solution.status,
             constrained=tuple(sorted(bounds)),
             note=(
-                f"best of {len(result.designs)} designs by guaranteed product "
+                f"best of {len(available)} designs by guaranteed product "
                 f"({best.guaranteed_product:.4g}); complete deletions only — this formulation "
                 "cannot express a partial knockdown"
+                + (
+                    f"; {barred} more were discarded for using an off-limits reaction"
+                    if barred
+                    else ""
+                )
+                + (
+                    f"; {lethal} better-scoring design(s) were skipped for breaching the "
+                    "growth floor once resolved to gene edits"
+                    if lethal
+                    else ""
+                )
                 + (
                     "; scored as the gene edit, which also stops "
                     + ", ".join(collateral)
@@ -589,30 +723,27 @@ def _strain_design_row(
     )
 
 
-def _knockdown_sweep_row(
+def _sweep_label(depth: int) -> str:
+    """The control's name, which has to say how deep it searched and how."""
+
+    if depth <= 1:
+        return _SWEEP_LABEL
+    return f"best deterministic design + {depth} knockdowns (greedy)"
+
+
+def _best_single_knockdown(
     model: Model,
     *,
     product: str,
     biomass: str,
     growth_floor: float,
-    base_label: str,
-    base_design: Sequence[str],
-    base_bounds: Mapping[str, tuple[float, float]],
-) -> tuple[BaselineRow, dict[str, tuple[float, float]]]:
-    """The best deterministic design plus the single best knockdown, found by exhausting them.
+    standing: Mapping[str, tuple[float, float]],
+    forbidden: Collection[str],
+) -> tuple[float, str, dict[str, tuple[float, float]], str, int] | None:
+    """Try every knockdown the agent could play on ``standing``; keep the best guarantee.
 
-    This is the control that says what the decision model contributed. The agent's claim to add
-    something the designers cannot is specific: OptKnock's variables are present-or-absent, so a
-    knockdown on top of a proven design is a move it could not have considered. True — but
-    "could not have considered" is not "requires judgement to find". There are only as many such
-    moves as there are reactions carrying flux, each costs one solve, and trying all of them
-    takes about a second on ``e_coli_core``.
-
-    So the row is built the way the agent would have to build it: the same proven design, the
-    same ``knockdown_50``, resolved through the same GPR, held to the same growth floor, ranked
-    on the same guaranteed product. Whatever the agent's row has over this one is what the
-    judgement bought; whatever it does not is what exhaustive enumeration was already going to
-    find.
+    Returns ``(guarantee, reaction id, the combined bounds, the move's description, n tried)``
+    or ``None`` when nothing holds the growth floor.
     """
 
     from cmm.jev.actions import (
@@ -622,55 +753,28 @@ def _knockdown_sweep_row(
     )
     from cmm.jev.engine import _solve
 
-    started = time.perf_counter()
-    if not base_design:
-        return (
-            BaselineRow(
-                method=_SWEEP_LABEL,
-                design=(),
-                product_flux=float("nan"),
-                growth=float("nan"),
-                seconds=time.perf_counter() - started,
-                deterministic=True,
-                status="no design",
-                note="no deterministic design was found to build on",
-            ),
-            {},
-        )
-
     with model:
-        for reaction_id, (lower, upper) in base_bounds.items():
+        for reaction_id, (lower, upper) in standing.items():
             model.reactions.get_by_id(reaction_id).bounds = (lower, upper)
         reference = _solve(model)
         if (
             reference.status != "optimal"
         ):  # pragma: no cover - the base row already solved
-            return (
-                BaselineRow(
-                    method=_SWEEP_LABEL,
-                    design=(),
-                    product_flux=float("nan"),
-                    growth=float("nan"),
-                    seconds=time.perf_counter() - started,
-                    deterministic=True,
-                    status=reference.status,
-                    note=f"the {base_label} design does not solve, so nothing can be added",
-                ),
-                {},
-            )
+            return None
         # "Half of wild type" means half of what the reaction carries in the state the
-        # knockdown is applied to, which here is the proven design — exactly what the agent's
-        # own screen measures against.
+        # knockdown is applied to, which here is the design standing at this step — exactly
+        # what the agent's own screen measures against.
         reference_fluxes = dict(reference.fluxes)
-        best: tuple[float, str, dict[str, tuple[float, float]], str] | None = None
+        best: tuple[float, str, dict[str, tuple[float, float]], str, int] | None = None
         n_tried = 0
         for reaction in list(model.reactions):
             # The same universe the agent plays on: a reaction with no gene association is a
             # bound edit nobody can build, and offering the control a move the agent was never
-            # offered would stop it being a control.
+            # offered — including one the run put off limits — would stop it being a control.
             if (
-                reaction.id in base_bounds
+                reaction.id in standing
                 or reaction.id == product
+                or reaction.id in forbidden
                 or not reaction.genes
                 or reaction.objective_coefficient != 0
             ):
@@ -683,6 +787,9 @@ def _knockdown_sweep_row(
                     reference_fluxes,
                 )
             except (ActionNotApplicable, KeyError):
+                continue
+            if set(rid for rid, _, _ in trial.bounds) & set(forbidden):
+                # The gene edit would also weaken a reaction the run forbade.
                 continue
             n_tried += 1
             saved = [
@@ -703,51 +810,129 @@ def _knockdown_sweep_row(
             if guaranteed is None:
                 continue
             if best is None or guaranteed > best[0]:
-                combined = dict(base_bounds)
+                combined = dict(standing)
                 for rid, lower, upper in trial.bounds:
                     combined[rid] = (lower, upper)
-                best = (guaranteed, reaction.id, combined, trial.describe())
-
-    elapsed = time.perf_counter() - started
+                best = (guaranteed, reaction.id, combined, trial.describe(), n_tried)
     if best is None:
+        return None
+    return (*best[:4], n_tried)
+
+
+def _knockdown_sweep_row(
+    model: Model,
+    *,
+    product: str,
+    biomass: str,
+    growth_floor: float,
+    base_label: str,
+    base_design: Sequence[str],
+    base_bounds: Mapping[str, tuple[float, float]],
+    max_knockdowns: int = 1,
+    forbidden: Collection[str] = (),
+) -> tuple[BaselineRow, dict[str, tuple[float, float]]]:
+    """The best deterministic design plus the knockdowns a search finds on top of it.
+
+    This is the control that says what the decision model contributed. The agent's claim to add
+    something the designers cannot is specific: OptKnock's variables are present-or-absent, so a
+    knockdown on top of a proven design is a move it could not have considered. True — but
+    "could not have considered" is not "requires judgement to find". There are only as many such
+    moves as there are reactions carrying flux, each costs one solve, and trying all of them
+    takes about a second on ``e_coli_core``.
+
+    So the row is built the way the agent would have to build it: the same proven design, the
+    same ``knockdown_50``, resolved through the same GPR, held to the same growth floor and the
+    same off-limits set, ranked on the same guaranteed product.
+
+    **It searches as deep as the agent's own knockdown budget**, because a control that stops at
+    one move while the agent may play three is not testing the agent at the depth it plays. One
+    knockdown is exhaustive and the row says so. Past that it is greedy — best first move, then
+    the best move on top of it — which is the honest name for it and the right shape of control:
+    exhaustive search at depth 3 over a board of this size is the cost the agent exists to
+    avoid, so beating *greedy* is the least the judgement has to do to be worth its price.
+    """
+
+    started = time.perf_counter()
+    depth = max(int(max_knockdowns), 0)
+    label = _sweep_label(depth)
+    if not base_design or depth < 1:
         return (
             BaselineRow(
-                method=_SWEEP_LABEL,
+                method=label,
+                design=tuple(base_design),
+                product_flux=float("nan"),
+                growth=float("nan"),
+                seconds=time.perf_counter() - started,
+                deterministic=True,
+                status="no design" if not base_design else "no budget",
+                note=(
+                    "no deterministic design was found to build on"
+                    if not base_design
+                    else "the run allows no knockdowns, so there is nothing to add"
+                ),
+            ),
+            {},
+        )
+
+    standing = dict(base_bounds)
+    applied: list[str] = []
+    tried_total = 0
+    for _ in range(depth):
+        step = _best_single_knockdown(
+            model,
+            product=product,
+            biomass=biomass,
+            growth_floor=growth_floor,
+            standing=standing,
+            forbidden=frozenset(forbidden),
+        )
+        if step is None:
+            break
+        _, _, standing, described, n_tried = step
+        applied.append(described)
+        tried_total += n_tried
+
+    elapsed = time.perf_counter() - started
+    if not applied:
+        return (
+            BaselineRow(
+                method=label,
                 design=tuple(base_design),
                 product_flux=float("nan"),
                 growth=float("nan"),
                 seconds=elapsed,
                 deterministic=True,
                 status="none viable",
-                note=(
-                    f"none of {n_tried} knockdowns on the {base_label} design held the "
-                    "growth floor"
-                ),
+                note=(f"no knockdown on the {base_label} design held the growth floor"),
             ),
             {},
         )
 
-    _, reaction_id, combined, described = best
-    solution = _evaluate(model, combined)
+    solution = _evaluate(model, standing)
+    how = (
+        "exhaustively, every knockdown tried"
+        if depth == 1
+        else f"greedily to a depth of {len(applied)}, best move first"
+    )
     return (
         BaselineRow(
-            method=_SWEEP_LABEL,
-            design=(*base_design, described),
+            method=label,
+            design=(*base_design, *applied),
             product_flux=float(solution.fluxes.get(product, 0.0)),
             growth=float(solution.fluxes.get(biomass, 0.0)),
             seconds=elapsed,
             deterministic=True,
             status=solution.status,
             contains_design=base_label,
-            constrained=tuple(sorted(combined)),
+            constrained=tuple(sorted(standing)),
             note=(
-                f"the {base_label} design plus the best of {n_tried} knockdowns, ranked on "
-                f"guaranteed product; {reaction_id} won. No judgement anywhere in this row — "
-                "it is what exhausting the agent's own vocabulary on the agent's own starting "
-                "point already gives"
+                f"the {base_label} design plus {len(applied)} knockdown(s), searched {how} "
+                f"over {tried_total} trial move(s) and ranked on guaranteed product. No "
+                "judgement anywhere in this row — it is what searching the agent's own "
+                "vocabulary from the agent's own starting point already gives"
             ),
         ),
-        combined,
+        standing,
     )
 
 
@@ -768,6 +953,8 @@ def _amplification_headroom_row(
     biomass: str,
     growth_floor: float,
     design: Mapping[str, tuple[float, float]],
+    *,
+    forbidden: Collection[str] = (),
 ) -> tuple[BaselineRow, dict[str, tuple[float, float]]]:
     """The best amplification available **on top of the design being scored**.
 
@@ -833,7 +1020,14 @@ def _amplification_headroom_row(
 
         best: tuple[str, float, float, str, tuple[float, float]] | None = None
         refused = 0
+        off_limits = 0
         for target in ranked[:_HEADROOM_TARGETS]:
+            if target in forbidden:
+                # The price of the vocabulary restriction is measured on moves the run would
+                # actually allow itself. Forcing a reaction the person said not to touch
+                # prices a decision nobody made.
+                off_limits += 1
+                continue
             probe = _forced_bounds(model, target, float(base.fluxes.get(target, 0.0)))
             if probe is None:
                 continue
@@ -850,7 +1044,7 @@ def _amplification_headroom_row(
         f"; {refused} of the ranked targets were refused for dropping growth below the floor"
         if refused
         else ""
-    )
+    ) + (f"; {off_limits} were off limits" if off_limits else "")
     if best is None:
         return failed(
             "no viable target",
@@ -988,12 +1182,13 @@ def comparison_summary(
         for row in scored
         if row.deterministic
         and row.design
-        and row.method not in (_HEADROOM_LABEL, _SWEEP_LABEL)
+        and row.method != _HEADROOM_LABEL
+        and not _is_sweep(row.method)
     ]
     best_deterministic = max(deterministic, key=_rank) if deterministic else None
     agent = next((row for row in scored if row.method == _AGENT_LABEL), None)
     amplification = next((row for row in scored if row.method == _HEADROOM_LABEL), None)
-    sweep = next((row for row in scored if row.method == _SWEEP_LABEL), None)
+    sweep = next((row for row in scored if _is_sweep(row.method)), None)
 
     quantity = (
         "guaranteed product"
@@ -1051,17 +1246,22 @@ def comparison_summary(
     # vocabulary on the agent's own starting point is not a method it gets to beat quietly.
     if agent is not None and sweep is not None:
         gap = _rank(agent) - _rank(sweep)
+        searched = (
+            "Exhaustively trying every knockdown"
+            if sweep.method == _SWEEP_LABEL
+            else ("A plain greedy search over the same knockdowns")
+        )
         if gap > 1e-6:
             verdict += (
-                f" Exhaustively trying every knockdown on the same proven design reaches "
-                f"{_rank(sweep):.4g}, which the agent beat by {gap:+.4g}."
+                f" {searched} on the same proven design reaches {_rank(sweep):.4g}, which the "
+                f"agent beat by {gap:+.4g} — that margin is what the judgement bought."
             )
         else:
             verdict += (
-                f" Exhaustively trying every knockdown on the same proven design reaches "
-                f"{_rank(sweep):.4g} in {sweep.seconds:.3g} s and deterministically, "
-                f"{-gap:+.4g} against the agent — so on this problem the judgement bought "
-                "nothing enumeration was not already going to find."
+                f" {searched} on the same proven design reaches {_rank(sweep):.4g} in "
+                f"{sweep.seconds:.3g} s and deterministically, {-gap:+.4g} against the agent "
+                "— so on this problem the judgement bought nothing the search was not already "
+                "going to find."
             )
 
     # State the price of the restriction in the same breath as the verdict, so a reader is

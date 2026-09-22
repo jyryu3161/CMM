@@ -419,6 +419,12 @@ Read these together with the tick table:
 - an **`infeasible`** row is data. A lethal intervention is a finding.
 - `02_game/candidate_rankings.csv` holds the agent's probability over every option at every
   tick. The runner-up is often the more interesting row.
+- `02_game/ticks.csv` carries `runner_up`, `runner_up_confidence` and `decided_by` beside every
+  move, and `report.html` restates them for each move in the winning design under *How each of
+  those moves was chosen*. This is the one thing the agent has that a deterministic designer
+  does not: OptKnock returns an answer, and this returns an answer with the alternative it was
+  chosen over and by how much. A move taken by two points and one taken by sixty are different
+  kinds of decision, and only one of them is worth arguing with.
 
 ## Measured against the deterministic methods
 
@@ -461,12 +467,25 @@ knockdown does not raise what the strain can make; it removes the strain's freed
 less. That is the agent's actual contribution on this problem, and the old scoreboard could not
 express it.
 
-**A one-second exhaustive sweep finds the same thing.** The row above the agent's is the same
-proven design plus the best of every `knockdown_50` the agent could have played, tried one at a
-time. It reaches 9.948 in under a second, deterministically, and no judgement enters it
+**A one-second search finds the same thing, at whatever depth the agent plays.** The row above
+the agent's is the same proven design plus the `knockdown_50` moves a plain search finds on top
+of it — exhaustive at one knockdown, greedy past that, as deep as `max_knockdowns` allows the
+agent to go. It reaches 9.948 in about a second, deterministically, and no judgement enters it
 anywhere. "OptKnock cannot express a knockdown" is true; "finding the right knockdown needs a
 decision model" does not follow, and this row is what tests the difference. Any claim that the
 agent contributes something has to clear this row, not OptKnock.
+
+The depth matters because it is where the argument for an agent actually lives. At one
+knockdown there is nothing to search: a few dozen candidates, one solve each. The combinations
+only become expensive at two or three, which is exactly where greedy stops being obviously
+optimal — so that is the regime to run if you want to know whether the judgement is worth its
+price. Raise `max_knockdowns` and read the two rows against each other.
+
+**Every method is held to `off_limits`, not just the agent.** The agent never sees a forbidden
+reaction; a deterministic row that used one would be winning on a design the person running this
+said they would not build. The designers take no exclusion argument, so the constraint is
+applied to their answers and each row reports how much of its own search it removed. The same
+constraint reaches the single-gene screen, the control, and the amplification probe.
 
 **A single gene deletion cannot solve this problem at all.** The best of 71 reaches nothing
 once it is re-optimised. Anaerobic succinate needs several routes closed at once, and no

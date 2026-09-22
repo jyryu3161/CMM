@@ -524,13 +524,37 @@ is an ordinary CMM solve. What is validated is the loop, not the agent:
   isozymes, complexes and shared genes enter every row identically. The single-gene row is
   chosen on the MOMA-L2 screen and re-scored under pFBA like everything else, rather than
   reporting a minimal-adjustment product in a column of re-optimised ones.
-- **The comparison carries the control that isolates what the agent's judgement added.** The row
-  `best deterministic design + one knockdown (exhaustive)` takes the same proven design the
-  agent was seeded with and tries every `knockdown_50` the agent could have played, one at a
-  time, under the same growth floor and gene resolution. On anaerobic succinate it reaches
-  9.9475 guaranteed in under a second where the shipped agent run reached 9.9459. That
-  OptKnock's formulation cannot express a knockdown is true; that finding the knockdown needs a
-  decision model does not follow, and this row is what tests the difference.
+- **The comparison carries the control that isolates what the agent's judgement added, at the
+  depth the agent plays.** The control takes the same proven design the agent was seeded with
+  and searches the same `knockdown_50` vocabulary on top of it, under the same growth floor,
+  the same gene resolution and the same off-limits set. It searches as deep as
+  `max_knockdowns`: at depth 1 it is exhaustive and the row says so; past that it is greedy —
+  best move, then the best move on top of it — which is the honest name and the right shape,
+  because exhaustive search at depth 3 over a board of this size is the cost the agent exists
+  to avoid. On anaerobic succinate it reaches 9.9475 guaranteed in under a second at depth 1,
+  and 9.9487 at depth 3, where the shipped agent run reached 9.9459. That OptKnock's
+  formulation cannot express a knockdown is true; that finding the knockdown needs a decision
+  model does not follow, and this row is what tests the difference.
+- **`off_limits` binds every method, not only the agent.** The agent is refused an off-limits
+  reaction before it sees the board, so a deterministic row that used one would be winning on a
+  design the person running this said they would not build — two questions in one column. The
+  designers take no exclusion argument, so the constraint is applied to their answers: a design
+  reaching through a forbidden reaction is discarded and the count is reported, the single-gene
+  screen skips genes whose loss stops a forbidden reaction, the control never offers one, and
+  the amplification probe does not price a move the run would not allow itself.
+- **A deterministic design that is lethal as a gene edit is not that method's answer.** The
+  designers optimise over bare reactions; the gene achieving a deletion often stops others too.
+  With `THD2` off limits, OptKnock's next design by guaranteed product (`ACALD`, `D_LACt2`,
+  `TKT2`) is proven for 9.275 on reactions and drops growth to zero as genes. The row walks down
+  the ranking to the best design that still clears the growth floor once resolved, and says how
+  many it skipped, so no row credits a designer with a strain nobody can build.
+- **What each move was chosen over is on the record and in the report.** Every answer carries a
+  probability for every criterion the caller offered, so the runner-up and the margin are known.
+  `02_game/ticks.csv` carries `runner_up`, `runner_up_confidence` and `decided_by`, and
+  `report.html` states them for each move in the winning design. A move chosen over its
+  alternative by two points and one chosen by sixty are different kinds of decision; this is the
+  one thing the agent has that a deterministic designer does not, and leaving it in a 55 KB
+  transcript gives it away.
 - **A design the agent was handed is named as such.** With `seed_with_strain_design` on, the
   agent can adopt a deterministic design whole in one move and then be scored against it. Where
   the agent's design is a superset of a deterministic one, `contains_design` says which and the

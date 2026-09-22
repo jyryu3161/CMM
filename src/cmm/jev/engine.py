@@ -472,12 +472,30 @@ class TickRecord:
     guaranteed_product: float | None = None
     guaranteed_best: float | None = None
 
+    def runner_up(self) -> tuple[str | None, float | None, float | None]:
+        """What the agent nearly did instead: the second-ranked target and the margin.
+
+        The whole ranking is in ``02_game/candidate_rankings.csv`` and every probability is in
+        the transcript, but neither is a thing anyone reads. The runner-up is: a move chosen
+        over its alternative by 0.02 and a move chosen by 0.6 are different kinds of decision,
+        and only one of them is worth arguing with.
+        """
+
+        if len(self.target_ranking) < 2:
+            return (None, None, None)
+        (_, first), (name, second) = self.target_ranking[0], self.target_ranking[1]
+        return (name, second, first - second)
+
     def to_row(self) -> dict[str, object]:
+        runner_up, runner_up_confidence, margin = self.runner_up()
         return {
             "round": self.round_index,
             "tick": self.tick_index,
             "target": self.target,
             "target_confidence": self.target_confidence,
+            "runner_up": runner_up,
+            "runner_up_confidence": runner_up_confidence,
+            "decided_by": margin,
             "action": self.action,
             "action_confidence": self.action_confidence,
             "benefit_score": self.benefit_score,
@@ -1559,6 +1577,11 @@ def run_jev_design(
                 jev_interventions=best_interventions,
                 max_knockouts=config.design_max_knockouts,
                 max_solutions=config.design_max_solutions,
+                # The control searches as deep as the agent was allowed to play, and every
+                # method is held to the same off-limits set the agent was, so the table
+                # compares answers to one question rather than to several.
+                max_knockdowns=config.max_knockdowns,
+                forbidden=forbidden,
                 seed=config.seed,
             )
         except Exception as error:  # a comparison that fails must not lose the run
