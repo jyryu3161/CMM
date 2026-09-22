@@ -148,6 +148,12 @@ small and honestly won — an exhaustive screen of every deletion and every 50% 
 top of OptKnock's design reaches the same 9.9461, so the agent found the best its vocabulary
 allows.
 
+Every run writes `report.html` beside its tables: the whole run on one self-contained page,
+readable without CMM installed. In the desktop tab the bottom-right panel has three tabs —
+the moves as they are played, the rounds with what each one was allowed to use and what it
+built, and every target with the case for and against — and **Save full report…** copies the
+lot wherever you want it.
+
 Measured on `e_coli_core`: two calls per move, about 0.6 s and $0.00016 each, so a full run
 costs a fraction of a cent. **The CMM solves in a run are deterministic; JEV's decisions are
 not.** Every request and response is saved to `04_agent/transcript.jsonl` so a single run can

@@ -2619,3 +2619,82 @@ def test_the_cut_stops_before_it_empties_the_board(anaerobic_core_path) -> None:
     result = run_jev_design(config, client=client)
 
     assert any("too thin to play on" in note for note in result.notes)
+
+
+def test_the_run_bundle_carries_one_page_a_reader_can_open(
+    anaerobic_core_path, tmp_path
+) -> None:
+    """The bundle is the record; the report is the reading copy.
+
+    Eleven directories of CSV is the right shape for someone who already knows what they are
+    looking for and the wrong shape for someone who wants to read the result. The page is
+    self-contained — no R, no network, no assets beside it — so it can be sent to someone who
+    does not have CMM.
+    """
+
+    client = ScriptedClient([("PFL", "knockout"), ("end_round", None)] * 4)
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        output_dir=tmp_path / "run",
+        rounds=2,
+        steps_per_round=3,
+        growth_floor=0.01,
+        candidate_limit=12,
+        run_moma=False,
+        seed_with_strain_design=False,
+        run_baseline_comparison=False,
+    )
+    result = run_jev_design(config, client=client)
+
+    page = (tmp_path / "run" / "report.html").read_text(encoding="utf-8")
+    assert page.startswith("<!doctype html>")
+    # Self-contained: nothing to fetch, and nothing beside it to lose.
+    assert "<style>" in page
+    assert "src=" not in page and "<script" not in page
+
+    # The design, named by genes, because that is what a reader takes away.
+    assert "PFL" in page
+    for gene in result.best_interventions[0].gene_names:
+        assert gene in page
+    # The rounds, the targets and the honesty a run carries everywhere else.
+    assert "Question it answered" in page
+    assert "for and against" in page.lower()
+    assert "not scored against each other" in page.lower()
+    assert "computational hypothesis" in page.lower()
+
+    # And the manifest knows about it, so `report validate` does not see a stray file.
+    manifest = json.loads(
+        (tmp_path / "run" / "00_manifest.json").read_text(encoding="utf-8")
+    )
+    assert "agent_report" in manifest["artifacts"]
+    assert manifest["artifacts"]["agent_report"]["path"] == "report.html"
+
+
+def test_the_report_states_a_result_the_agent_did_not_win(
+    anaerobic_core_path, tmp_path
+) -> None:
+    """A run that does not beat the wild type still has to read as a result, not a failure."""
+
+    from cmm.jev.report import render_agent_report
+
+    client = ScriptedClient([("end_round", None)] * 6)
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        rounds=1,
+        steps_per_round=2,
+        growth_floor=0.01,
+        candidate_limit=12,
+        run_moma=False,
+        seed_with_strain_design=False,
+        run_baseline_comparison=False,
+        screen_interventions=False,
+    )
+    result = run_jev_design(config, client=client)
+
+    page = render_agent_report(result)
+    assert "did not beat the wild type" in page
+    assert "That is a result, not a failed run." in page

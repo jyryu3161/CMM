@@ -340,6 +340,14 @@ at report time, because an opinion in a results table is indistinguishable from 
 
 ## Reading a result
 
+Every run bundle carries **`report.html`**: the whole run on one self-contained page — design
+named by genes, the rounds and what each was allowed to use, every target for and against, the
+baseline table, the cost, the notes and the provenance. No R, no network, nothing beside it, so
+it can be sent to someone who does not have CMM. It renders only what the run measured; it is a
+reading copy of the bundle, not a publication report, and says so on its face. The desktop
+tab's **Save full report…** copies the bundle wherever you choose and opens that page.
+
+
 `00_summary.json` and the CLI output give the headline. `best_product_flux` is the product
 flux at the **pFBA** optimum of the best design that held the growth floor — the adapted
 strain, and the right score, because a design that only pays off if the cell chooses to make

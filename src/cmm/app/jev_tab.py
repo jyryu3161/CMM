@@ -18,6 +18,7 @@ reason :meth:`~cmm.app.main_window.CmmMainWindow._run_model_in_background` rebui
 
 from __future__ import annotations
 
+from datetime import datetime
 import html
 from pathlib import Path
 import tempfile
@@ -98,6 +99,7 @@ class JevTabMixin:
         self._jev_cost = 0.0
         self._jev_stop_requested = False
         self._jev_running = False
+        self._jev_run_dir = None
 
         controls = QGroupBox(
             "Agent — a decision model plays this model, one move at a time"
@@ -258,8 +260,19 @@ class JevTabMixin:
         self.jev_key_btn.clicked.connect(self.set_jev_api_key)
         self.jev_key_label = QLabel("")
         self.jev_key_label.setStyleSheet("color: #5a6b7c; font-size: 11px;")
+        # The run already writes a full bundle to a scratch directory; this copies it
+        # somewhere the user chose and opens the reading copy. Before this the desktop run
+        # wrote nothing at all, so a run watched on screen left no record of itself.
+        self.jev_save_btn = QPushButton("Save full report…")
+        self.jev_save_btn.setEnabled(False)
+        self.jev_save_btn.setToolTip(
+            "Write the whole run — report.html plus every table, the agent transcript and "
+            "the provenance — to a folder you choose."
+        )
+        self.jev_save_btn.clicked.connect(self.save_jev_report)
         run_row.addWidget(self.jev_run_btn)
         run_row.addWidget(self.jev_stop_btn)
+        run_row.addWidget(self.jev_save_btn)
         run_row.addSpacing(16)
         run_row.addWidget(self.jev_key_btn)
         run_row.addWidget(self.jev_key_label)
@@ -328,12 +341,24 @@ class JevTabMixin:
         summary_area.setWidget(self.jev_summary)
         summary_area.setWidgetResizable(True)
         summary_area.setFrameShape(QScrollArea.NoFrame)
-        summary_area.setMaximumHeight(120)
         summary_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        layout.addWidget(summary_area)
+        # Dragged, not capped. A fixed 120 pixels kept the summary from eating the flux map,
+        # and cut the design list off mid-line — the design being the one thing a reader is
+        # here for. A splitter gives the map its floor and still lets the summary be opened
+        # up to read.
+        summary_area.setMinimumHeight(96)
 
         results = QSplitter(Qt.Horizontal)
         map_box = QVBoxLayout()
+        # The move's name as a widget, not as text drawn into the figure. A suptitle is laid
+        # out in points against a drawing measured in inches, so it grew relative to the map
+        # whenever the canvas rescaled the figure — and it cost a band of blank figure across
+        # the top that the map could have used. A label is crisp at any panel size and free.
+        self.jev_map_title = QLabel("")
+        self.jev_map_title.setStyleSheet(
+            "font-weight: bold; font-size: 13px; color: #23313f; padding: 2px 4px;"
+        )
+        map_box.addWidget(self.jev_map_title)
         self.jev_canvas_holder = QVBoxLayout()
         map_box.addLayout(self.jev_canvas_holder, 1)
         # The picture needs to say what it is. Asked what they were looking at, the honest
@@ -422,8 +447,38 @@ class JevTabMixin:
         self.jev_targets.setAlternatingRowColors(True)
         self.jev_targets.setWordWrap(True)
 
+        # One row per round: what it was allowed to use, what it built, and what it left.
+        # A multi-round run is a portfolio, and a portfolio nobody can see is one design.
+        self.jev_rounds = QTableWidget(0, 6)
+        self.jev_rounds.setHorizontalHeaderLabels(
+            [
+                "Round",
+                "Question it answered",
+                "Engineering",
+                "Product",
+                "Growth",
+                "Left undone",
+            ]
+        )
+        rounds_header = self.jev_rounds.horizontalHeader()
+        for column, mode in enumerate(
+            (
+                QHeaderView.ResizeToContents,
+                QHeaderView.ResizeToContents,
+                QHeaderView.Stretch,
+                QHeaderView.ResizeToContents,
+                QHeaderView.ResizeToContents,
+                QHeaderView.Stretch,
+            )
+        ):
+            rounds_header.setSectionResizeMode(column, mode)
+        self.jev_rounds.verticalHeader().setVisible(False)
+        self.jev_rounds.setAlternatingRowColors(True)
+        self.jev_rounds.setWordWrap(True)
+
         self.jev_lower_tabs = QTabWidget()
         self.jev_lower_tabs.addTab(self.jev_table, "Moves")
+        self.jev_lower_tabs.addTab(self.jev_rounds, "Rounds")
         self.jev_lower_tabs.addTab(self.jev_targets, "Targets: for and against")
 
         right = QSplitter(Qt.Vertical)
@@ -435,7 +490,14 @@ class JevTabMixin:
         results.setStretchFactor(0, 3)
         results.setStretchFactor(1, 2)
         results.setSizes([780, 520])
-        layout.addWidget(results, 1)
+
+        body = QSplitter(Qt.Vertical)
+        body.addWidget(summary_area)
+        body.addWidget(results)
+        body.setStretchFactor(0, 0)
+        body.setStretchFactor(1, 1)
+        body.setSizes([150, 620])
+        layout.addWidget(body, 1)
 
         self._jev_bridge = _TickBridge()
         # Queued so the slot runs on the UI thread even though the engine emits from the
@@ -475,10 +537,13 @@ class JevTabMixin:
             self.jev_summary.setText(_NO_KEY_MESSAGE)
 
         self.jev_table.setRowCount(0)
+        self.jev_rounds.setRowCount(0)
         self.jev_targets.setRowCount(0)
         self._jev_frames = []
         self._jev_result = None
         self._jev_cost = 0.0
+        self._jev_run_dir = None
+        self.jev_save_btn.setEnabled(False)
         self.jev_cost.setText("$0.0000")
 
     def _on_jev_web_toggled(self, checked: bool) -> None:
@@ -668,18 +733,24 @@ class JevTabMixin:
             f"step 0 of up to {self.jev_ticks_spin.value()} this round"
         )
         self.jev_weights.setRowCount(0)
+        self.jev_map_title.setText("")
         self.jev_thinking.setText("Asking the agent for its first move\u2026")
         self.jev_summary.setText(f"The agent is playing for {html.escape(product)}…")
 
         # Serialize on the UI thread: the worker must not touch this model's solver object.
         from cobra.io import write_sbml_model
 
-        scratch = Path(tempfile.mkdtemp(prefix="cmm-jev-"))
+        scratch = Path(tempfile.mkdtemp(prefix="cmm-agent-"))
         model_path = scratch / "model.xml"
         write_sbml_model(self.model, str(model_path))
+        self._jev_run_dir = scratch / "run"
 
         config = JevConfig(
             model_path=model_path,
+            # Always write the bundle. It costs a directory of CSV and it is the difference
+            # between a run someone watched and a run someone can check afterwards.
+            output_dir=self._jev_run_dir,
+            overwrite=True,
             product=product,
             rounds=self.jev_rounds_spin.value(),
             steps_per_round=self.jev_ticks_spin.value(),
@@ -713,7 +784,61 @@ class JevTabMixin:
 
         self._jev_result = result
         self._show_jev_summary(result)
+        self._fill_jev_rounds(result)
         self._fill_jev_targets(result)
+        self.jev_save_btn.setEnabled(result.run_directory is not None)
+
+    def save_jev_report(self) -> None:
+        """Copy the whole run somewhere the user chose, and open the reading copy.
+
+        The bundle is written during the run to a scratch directory, so this is a copy rather
+        than a re-render: what gets saved is exactly what was scored, not a second pass over
+        the result that could disagree with it.
+        """
+
+        from qtpy.QtWidgets import QFileDialog
+
+        source = getattr(self, "_jev_run_dir", None)
+        if self._jev_result is None or source is None or not Path(source).is_dir():
+            QMessageBox.information(
+                self,
+                "Save report",
+                "Run the agent first; there is no run directory to save.",
+            )
+            return
+
+        chosen = QFileDialog.getExistingDirectory(
+            self, "Where should the run be saved?", str(Path.home())
+        )
+        if not chosen:
+            return
+
+        import shutil
+
+        product = str(self._jev_result.summary()["product"])
+        stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+        target = Path(chosen) / f"agent-{product}-{stamp}"
+        try:
+            shutil.copytree(source, target)
+        except OSError as error:
+            QMessageBox.warning(
+                self, "Save report", f"The run could not be saved: {error}"
+            )
+            return
+
+        report = target / "report.html"
+        QMessageBox.information(
+            self,
+            "Save report",
+            f"Saved to:\n{target}\n\nOpen report.html for the whole run in one page; the "
+            "CSV tables, the agent transcript and the provenance are beside it.",
+        )
+        if report.exists():
+            from qtpy.QtCore import QUrl
+            from qtpy.QtGui import QDesktopServices
+
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(report)))
+        self.status_label.setText(f"Agent run saved to {target}.")
 
     def stop_jev_agent(self) -> None:
         """Ask the running game to stop after the step it is on.
@@ -994,39 +1119,93 @@ class JevTabMixin:
         move = tick.action or "no move"
         if tick.target != tick.action:
             move = f"{move} on {tick.target}"
-        title = f"R{tick.round_index}S{tick.tick_index}  {move}  —  product {tick.product_flux:.4g}"
+        title = (
+            f"Round {tick.round_index}, step {tick.tick_index}  ·  {move}  ·  "
+            f"product {tick.product_flux:.4g}, growth {tick.growth:.4g}"
+        )
+        # Author the figure at the width it will be shown at. Type is measured in points and
+        # the drawing in inches, so a figure drawn at 9 inches and stretched into a 6.5-inch
+        # panel comes out with its text 1.4x too large against the network — which is exactly
+        # what it looked like. The canvas is the authority on that width.
+        canvas = getattr(self, "_jev_canvas", None)
+        panel_px = canvas.width() if canvas is not None else 0
+        if panel_px < 200:
+            panel_px = max(self.jev_canvas_holder.geometry().width(), 620)
+        width = max(5.0, min(panel_px / 100.0, 11.0))
         try:
             if self._map_path:
-                # Metabolite labels off. At full size the curated map reads well, but
-                # this panel scales it to roughly a third of that and the labels become
-                # overlapping smudges. Reaction names are what a move is about and they
-                # survive; the metabolite names are recoverable with the toolbar's zoom.
+                # Metabolite labels off, and reactions at rest left unnamed. At full size the
+                # curated map reads well; in a panel a third of that, naming all ninety-five
+                # reactions spends the space on the half that are doing nothing and the names
+                # collide into smudges. Zoom or the Flux Map tab gives the full figure.
                 figure = escher_flux_map(
                     self._map_path,
                     dict(fluxes),
                     title="",
-                    width=9.0,
+                    width=width,
                     label_metabolites=False,
+                    label_min_fraction=0.01,
+                    font_scale=0.85,
                 )
             else:
                 figure = network_flux_map(self.model, dict(fluxes), title="")
-            # Anchored to the figure, left-aligned, rather than centred on the axes. The
-            # renderer centres its title on the map's own extent, which reaches past the
-            # panel once the canvas scales it down, and the first character is lost.
-            figure.suptitle(title, x=0.015, ha="left", fontsize=11, fontweight="bold")
+            self.jev_map_title.setText(title)
         except Exception as exc:  # a map that cannot be drawn must not stop the game
             self.status_label.setText(f"{tick.headline()} (map not drawn: {exc})")
             return
         self._set_figure(self.jev_canvas_holder, "jev", figure)
         what = (
-            "Curated Escher map of this model, coloured and widened by flux. Metabolite "
-            "labels are hidden at this size \u2014 use the magnifier to zoom, or the Flux "
-            "Map tab for the full-size figure."
+            "Curated Escher map, coloured and widened by flux. Only reactions carrying flux "
+            "are named at this size, and metabolites are not \u2014 zoom with the magnifier, "
+            "or use the Flux Map tab for the full figure."
             if self._map_path
             else "Schematic of the highest-flux reactions; no curated Escher map fits this "
             "model. Arrow colour and width both scale with the flux magnitude."
         )
         self.jev_map_caption.setText(f"{self._flux_change(fluxes, previous)}  {what}")
+
+    def _fill_jev_rounds(self, result) -> None:
+        """What each round was allowed to do, what it engineered, and what it left behind.
+
+        The engineering column is the point of the tab: a round's design, named by its genes,
+        is the thing a reader takes away. The question column says why the rounds differ —
+        each one is barred from a reaction an earlier design used, so a later row reads "the
+        best design without X", which is the design a laboratory that cannot edit X needs.
+        """
+
+        records = result.rounds
+        self.jev_rounds.setRowCount(len(records))
+        best = max((r.product_flux for r in records), default=0.0)
+        for row, record in enumerate(records):
+            question = (
+                "best available"
+                if not record.withheld
+                else "best without " + ", ".join(record.withheld)
+            )
+            design = "\n".join(record.interventions) or "nothing was applied"
+            if record.repeated is not None:
+                design += f"\n(the same design round {record.repeated} found)"
+            values = [
+                f"R{record.round_index}",
+                question,
+                design,
+                f"{record.product_flux:.4g}",
+                f"{record.growth:.4g}",
+                "\n".join(f"\u2022 {line}" for line in record.shortfall)
+                or record.stopped_because,
+            ]
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                item.setTextAlignment(Qt.AlignLeft | Qt.AlignTop)
+                if record.product_flux >= best - 1e-9 and best > 0:
+                    item.setBackground(QColor("#dce9d6"))
+                self.jev_rounds.setItem(row, column, item)
+        self.jev_rounds.resizeRowsToContents()
+        distinct = len({record.signature for record in records})
+        self.jev_lower_tabs.setTabText(
+            1, f"Rounds ({distinct} distinct design{'' if distinct == 1 else 's'})"
+        )
 
     def _fill_jev_targets(self, result) -> None:
         """Every target the run weighed, with the case for and against editing it.
@@ -1062,7 +1241,7 @@ class JevTabMixin:
         self.jev_targets.resizeRowsToContents()
         if reports:
             self.jev_lower_tabs.setTabText(
-                1, f"Targets: for and against ({len(reports)})"
+                2, f"Targets: for and against ({len(reports)})"
             )
 
     def _show_jev_summary(self, result) -> None:

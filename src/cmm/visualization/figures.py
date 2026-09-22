@@ -937,6 +937,8 @@ def escher_flux_map(
     background_extent: tuple[float, float, float, float] | None = None,
     background_alpha: float = 1.0,
     line_width: float | None = None,
+    font_scale: float = 1.0,
+    label_min_fraction: float | None = None,
 ) -> Figure:
     """Render an Escher map (curated node/segment layout) coloured by flux.
 
@@ -949,6 +951,15 @@ def escher_flux_map(
     colour alone encodes magnitude. Useful over a ``background``, where a wide stroke covers
     the drawing underneath it.
 
+    ``font_scale`` multiplies every text size. Type is measured in points and the drawing in
+    inches, so a caller that authors the figure at one width and displays it at another
+    changes the ratio between them: rendered into a 6.5-inch panel, a figure authored at 9
+    inches has text 1.4x larger relative to the network than it was drawn to have. Authoring
+    at the display width is the real fix and this is the adjustment on top of it.
+
+    ``label_min_fraction`` labels only the reactions carrying at least that fraction of the
+    largest flux. On a map where half the network is at zero, naming all of it spends the
+    space that the reactions actually doing something need, and the names collide.
     """
 
     # A background drawing of this map already carries the labels and the metabolite circles,
@@ -1059,19 +1070,25 @@ def escher_flux_map(
                     n.get("label_x", n["x"]),
                     n.get("label_y", n["y"]),
                     str(n.get("bigg_id", "")).rsplit("_", 1)[0],
-                    fontsize=4.5,
+                    fontsize=4.5 * font_scale,
                     ha="left",
                     va="center",
                     color="#11243b",
                     zorder=4,
                 )
     if label_reactions:
+        floor = (label_min_fraction or 0.0) * amax
         for r in reactions.values():
+            if floor and abs(fluxes.get(r["bigg_id"], 0.0)) < floor:
+                # A reaction at rest is drawn, in grey, and not named. Its name would cost the
+                # same space as a name that means something, and on a map half of which is at
+                # zero that is most of the space.
+                continue
             ax.text(
                 r.get("label_x", 0),
                 r.get("label_y", 0),
                 r["bigg_id"],
-                fontsize=4.5,
+                fontsize=4.5 * font_scale,
                 ha="left",
                 va="center",
                 color="#7a3b00",
@@ -1090,7 +1107,8 @@ def escher_flux_map(
     cbar = fig.colorbar(
         mappable, ax=ax, fraction=0.035, pad=0.02, shrink=0.55, aspect=14
     )
-    cbar.set_label("flux (mmol gDW$^{-1}$ h$^{-1}$)", fontsize=9)
+    cbar.set_label("flux (mmol gDW$^{-1}$ h$^{-1}$)", fontsize=9 * font_scale)
+    cbar.ax.tick_params(labelsize=8 * font_scale)
     # `colorbar` re-anchors its parent to (1.0, 0.5) so the axes hugs the bar. With
     # `set_aspect("equal")` the axes box shrinks whenever the canvas is wider than the map,
     # and a right anchor takes every bit of that shrinkage off the left edge — the map and its
@@ -1099,7 +1117,7 @@ def escher_flux_map(
     if title:
         # Smaller and further off the drawing than the default: an Escher map fills its axes
         # completely, so a large title sitting on the top edge crowds the network it names.
-        ax.set_title(title, fontsize=12, fontweight="bold", pad=16)
+        ax.set_title(title, fontsize=12 * font_scale, fontweight="bold", pad=16)
     # `tight_layout` solves the margins once, at the size the figure was authored. The GUI
     # canvas then stretches the figure to whatever the panel is, the solved margins no longer
     # fit, and the title is clipped against the top edge. A constrained layout re-solves on

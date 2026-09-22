@@ -38,6 +38,7 @@ _STAGE_DIRECTORIES = (
 )
 
 _OWNED_ROOT_FILES = (
+    "report.html",
     "00_config.json",
     "00_provenance.json",
     "00_summary.json",
@@ -249,6 +250,18 @@ def export_run(result: JevResult, *, model: Model, reference: FluxState) -> JevR
         role="provenance",
     )
     writer.json("00_summary.json", result.summary(), stage="root", role="summary")
+
+    # One file a reader can open. The bundle is the record; this is the reading copy, and it
+    # is self-contained on purpose so it can be sent to someone who does not have CMM.
+    from cmm.jev.report import render_agent_report
+
+    writer.text(
+        "report.html",
+        render_agent_report(result),
+        stage="root",
+        role="agent_report",
+        media_type="text/html",
+    )
 
     manifest_record = ArtifactRecord(
         path="00_manifest.json",

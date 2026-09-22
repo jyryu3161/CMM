@@ -528,3 +528,100 @@ def test_the_web_lookup_says_what_it_needs_instead_of_going_quiet(
     assert not window.jev_run_btn.isEnabled()
     window.jev_web_check.setChecked(False)
     assert window.jev_run_btn.isEnabled()
+
+
+def test_the_rounds_tab_shows_what_each_round_engineered(window, monkeypatch) -> None:
+    """A multi-round run is a portfolio, and a portfolio nobody can see is one design."""
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    window._refresh_jev_inputs()
+    window._goto_tab("Agent")
+    window.jev_product_combo.setCurrentText("EX_succ_e")
+    window.jev_rounds_spin.setValue(2)
+    window.jev_ticks_spin.setValue(3)
+    monkeypatch.setattr(
+        "cmm.jev.engine.JevClient",
+        lambda **kwargs: ScriptedClient([("PFL", "knockout"), ("end_round", None)] * 6),
+        raising=True,
+    )
+    window.run_jev_agent()
+
+    assert window.jev_rounds.rowCount() == len(window._jev_result.rounds)
+    assert "Rounds" in window.jev_lower_tabs.tabText(1)
+    # The engineering column names genes, because that is what a reader takes away.
+    engineering = window.jev_rounds.item(0, 2).text()
+    assert "PFL" in engineering
+    assert "pfl" in engineering.lower(), "the gene names belong in the row"
+    # And the question column says why the rounds differ.
+    assert "best" in window.jev_rounds.item(0, 1).text()
+
+
+def test_a_desktop_run_leaves_a_record_that_can_be_saved(window, monkeypatch) -> None:
+    """Before this, a run watched on screen wrote nothing at all.
+
+    The bundle is written during the run, so Save is a copy of what was scored rather than a
+    second pass over the result that could disagree with it.
+    """
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    window._refresh_jev_inputs()
+    window._goto_tab("Agent")
+    window.jev_product_combo.setCurrentText("EX_succ_e")
+    window.jev_rounds_spin.setValue(1)
+    window.jev_ticks_spin.setValue(2)
+    monkeypatch.setattr(
+        "cmm.jev.engine.JevClient",
+        lambda **kwargs: ScriptedClient([("PFL", "knockout")]),
+        raising=True,
+    )
+
+    assert not window.jev_save_btn.isEnabled(), "nothing to save before a run"
+    window.run_jev_agent()
+
+    assert window.jev_save_btn.isEnabled()
+    run_dir = window._jev_result.run_directory
+    assert run_dir is not None and run_dir.is_dir()
+    page = (run_dir / "report.html").read_text(encoding="utf-8")
+    assert "Agent design run" in page
+    assert "EX_succ_e" in page
+
+
+def test_the_map_is_drawn_at_the_width_it_is_shown_at(window, monkeypatch) -> None:
+    """Type is in points and the drawing is in inches, so the two have to be authored together.
+
+    A figure drawn at 9 inches and stretched into a 6.5-inch panel comes out with its text
+    1.4x too large against the network, which is what it looked like. The title is a widget
+    now for the same reason — and because it cost a band of blank figure across the top.
+    """
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    window._refresh_jev_inputs()
+    window._goto_tab("Agent")
+
+    widths: list[float] = []
+    from cmm.visualization import escher_flux_map as original
+
+    def record(map_path, fluxes, **kwargs):
+        widths.append(kwargs.get("width"))
+        assert kwargs.get("label_min_fraction"), "reactions at rest must go unnamed"
+        assert kwargs.get("font_scale", 1.0) < 1.0
+        return original(map_path, fluxes, **kwargs)
+
+    monkeypatch.setattr("cmm.visualization.escher_flux_map", record)
+    window.jev_product_combo.setCurrentText("EX_succ_e")
+    window.jev_rounds_spin.setValue(1)
+    window.jev_ticks_spin.setValue(2)
+    monkeypatch.setattr(
+        "cmm.jev.engine.JevClient",
+        lambda **kwargs: ScriptedClient([("PFL", "knockout")]),
+        raising=True,
+    )
+    window.run_jev_agent()
+
+    assert widths, (
+        "this model has a curated Escher map, so the map path must have been taken — "
+        "an empty list here means the patch stopped applying and the test proves nothing"
+    )
+    assert all(5.0 <= w <= 11.0 for w in widths)
+    # The move's name is a widget, so it is never drawn into the figure.
+    assert "Round 1" in window.jev_map_title.text()

@@ -610,6 +610,7 @@ class CmmMainWindow(JevTabMixin, QMainWindow):
         jev.addSeparator()
         jev.addAction("Show Run Progress", self.show_jev_progress)
         jev.addAction("Show Last Decision", self.show_jev_last_decision)
+        jev.addAction("Save Full Report…", self.save_jev_report)
         jev.addSeparator()
         jev.addAction("Set OpenRouter API Key…", self.set_jev_api_key)
         jev.addAction("Clear OpenRouter API Key", self.clear_jev_api_key)
