@@ -34,6 +34,28 @@ uv run --frozen --all-extras python evals/run_evals.py \
 
 Exit status is `1` when any check fails, so this runs in CI unchanged.
 
+## Reading an agent's own scripts
+
+`run_evals.py` inspects a finished run bundle, which by definition came from CMM. The other
+risk is an agent that never produced one: asked for something CMM does not ship, it writes the
+method inline and reports numbers that carry no provenance (rule 12). `check_service_use.py`
+reads such scripts and reports where they solve, sample, or mutate a model outside CMM:
+
+```bash
+uv run --frozen --all-extras python evals/check_service_use.py analysis.py
+uv run --frozen --all-extras python evals/check_service_use.py --strict scripts/*.py
+```
+
+Two severities. **bypass** is a solve, a cobra analysis call, or a direct solver import — each
+message names the CMM function that owns it. **review** is hand-set `objective`, `medium`, or
+bounds, which is sometimes legitimate but leaves the change out of the condition record.
+Exit status is `1` on any bypass, and `--strict` fails on a review too.
+
+Point it at agent-authored scripts only: CMM's own source calls the solver legitimately.
+**A clean report means "no bypass in the files given", never "CMM produced every number"** — an
+agent that works in a REPL or deletes its script leaves nothing to read. This is detection
+after the fact; nothing here can prevent the bypass.
+
 ## How to add a task
 
 A task file declares `id`, `kind` (`production` or `transformation`), the `request` an agent was

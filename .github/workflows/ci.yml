@@ -161,6 +161,7 @@ jobs:
               "examples/transformation-targets/rmta.json",
               "evals/README.md",
               "evals/run_evals.py",
+              "evals/check_service_use.py",
               "evals/tasks/sc01_production.json",
               "evals/tasks/sc02_transformation.json",
           }
