@@ -69,6 +69,7 @@ from typing import Literal
 from cobra import Model
 
 from cmm.core.condition import ReactionBound
+from cmm.jev.genes import gene_names, resolve_gene_edit
 
 ActionKind = Literal["act", "look", "end"]
 InterventionMode = Literal["knockout", "knockdown"]
@@ -100,10 +101,13 @@ ACT_ACTIONS: tuple[Action, ...] = (
         mode="knockout",
         level=0.0,
         description=(
-            "Delete the gene or genes behind this reaction: force its flux to exactly zero. "
-            "Choose this when the reaction competes with the product for carbon or reducing "
-            "power and the cell can grow without it, or when it is an alternative route the "
-            "cell would escape down once the obvious ones are shut."
+            "Delete the gene or genes behind this reaction, forcing its flux to zero. The "
+            "record says which genes that is; if they are isozymes, all of them go, and if "
+            "one of them also serves another reaction, that reaction stops too and CMM "
+            "applies that as part of the move. Choose this when the reaction competes with "
+            "the product for carbon or reducing power and the cell can grow without it, or "
+            "when it is an alternative route the cell would escape down once the obvious "
+            "ones are shut."
         ),
     ),
     Action(
@@ -113,9 +117,10 @@ ACT_ACTIONS: tuple[Action, ...] = (
         level=0.5,
         description=(
             "Weaken the gene or genes behind this reaction so it carries at most half its "
-            "wild-type flux — a promoter swap or an RBS change rather than a deletion. "
-            "Choose this when the flux should be reduced but not removed, because deleting "
-            "it entirely would stop growth or cost more product than it frees."
+            "wild-type flux \u2014 a promoter swap or an RBS change rather than a deletion. "
+            "Any other reaction those genes alone carry is weakened with it. Choose this "
+            "when the flux should be reduced but not removed, because deleting it entirely "
+            "would stop growth or cost more product than it frees."
         ),
     ),
 )
@@ -238,9 +243,17 @@ ACTION_CATALOGUE: Mapping[str, Action] = {
 
 @dataclass(frozen=True)
 class Intervention:
-    """One applied change to one reaction, expressed relative to its wild-type flux.
+    """One gene edit, and every reaction bound that follows from it.
 
-    ``reference_flux`` is the reaction's flux in the round-0 wild-type pFBA state. The
+    The agent chooses a *reaction*; what gets built is a *gene* edit; and the two are not the
+    same thing, so this object holds both. ``reaction_id`` is what was chosen and ``genes`` is
+    the minimal set whose loss achieves it \u2014 for ``ACKr`` that is all three of *ackA*,
+    *tdcD* and *purT*, because deleting the textbook one alone leaves two isozymes and changes
+    nothing at all. ``bounds`` is then every reaction the edit actually constrains, which for a
+    shared gene is more than one: *dctA* runs ``SUCCt2_2``, ``FUMt2_2`` and ``MALt2_2``, and a
+    design that edits it edits all three whether anyone intended that or not.
+
+    ``reference_flux`` is the chosen reaction's flux in the round-0 wild-type pFBA state. The
     knockdown is defined against it rather than against the current state, so "half" does not
     drift as a run accumulates interventions.
     """
@@ -249,33 +262,83 @@ class Intervention:
     mode: InterventionMode
     level: float
     reference_flux: float
-    lower_bound: float
-    upper_bound: float
     action_name: str
-    #: The genes behind the reaction, because these moves are gene edits: a knockout is a
-    #: deletion of these genes and a knockdown is a weakening of them. A design row naming
-    #: only a reaction id is a row a wet-lab reader cannot act on.
+    #: The minimal gene set whose deletion achieves this move. Empty only for a reaction with
+    #: no gene association, which the board does not offer.
     genes: tuple[str, ...] = ()
+    #: ``(reaction id, lower, upper)`` for every reaction the edit constrains, the chosen one
+    #: included. This is what the engine applies; applying it to the chosen reaction alone
+    #: would model a strain nobody can build.
+    bounds: tuple[tuple[str, float, float], ...] = ()
+    #: Reactions the gene edit also hits but whose share of the change cannot be expressed \u2014
+    #: a knockdown of a reaction carrying no wild-type flux has nothing to be half of. Named
+    #: rather than silently forced to zero, which would turn a knockdown into a knockout of
+    #: something the agent never chose.
+    unmodelled: tuple[str, ...] = ()
+    #: Readable gene names where the model carries them, so a brief naming *ldhA* and a board
+    #: naming ``b1380`` are connectable.
+    gene_names: tuple[str, ...] = ()
 
-    def to_reaction_bound(self) -> ReactionBound:
+    @property
+    def lower_bound(self) -> float:
+        """The chosen reaction's new lower bound."""
+
+        return next(
+            (low for rid, low, _ in self.bounds if rid == self.reaction_id), 0.0
+        )
+
+    @property
+    def upper_bound(self) -> float:
+        """The chosen reaction's new upper bound."""
+
+        return next(
+            (high for rid, _, high in self.bounds if rid == self.reaction_id), 0.0
+        )
+
+    @property
+    def side_effects(self) -> tuple[str, ...]:
+        """Reactions constrained that the agent did not choose."""
+
+        return tuple(rid for rid, _, _ in self.bounds if rid != self.reaction_id)
+
+    def to_reaction_bounds(self) -> tuple[ReactionBound, ...]:
         """The change as the :class:`~cmm.core.condition.ReactionBound` CMM already applies."""
 
-        return ReactionBound(
-            reaction_id=self.reaction_id,
-            lower_bound=self.lower_bound,
-            upper_bound=self.upper_bound,
+        return tuple(
+            ReactionBound(reaction_id=rid, lower_bound=low, upper_bound=high)
+            for rid, low, high in self.bounds
         )
+
+    def gene_phrase(self) -> str:
+        """How the edit is named to a reader: gene names where the model has them."""
+
+        if not self.genes:
+            return "no gene association"
+        return ", ".join(self.gene_names or self.genes)
 
     def describe(self) -> str:
         """A one-line human summary, used in the state history and in report tables."""
 
-        genes = f" [{', '.join(self.genes)}]" if self.genes else ""
-        if self.mode == "knockout":
-            return f"{self.reaction_id}{genes}: knockout (flux forced to 0)"
-        return (
-            f"{self.reaction_id}{genes}: knockdown to {self.level:.0%} of wild type "
-            f"(|v| ≤ {abs(self.level * self.reference_flux):.4g})"
+        head = (
+            self.reaction_id
+            if not self.genes
+            else f"{self.reaction_id} ({self.gene_phrase()})"
         )
+        if self.mode == "knockout":
+            line = f"{head}: delete the gene(s), flux forced to 0"
+        else:
+            line = (
+                f"{head}: weaken the gene(s) to 50% of wild type "
+                f"(|v| \u2264 {abs(self.level * self.reference_flux):.4g})"
+            )
+        if self.side_effects:
+            line += f" \u2014 also constrains {', '.join(self.side_effects)}"
+        if self.unmodelled:
+            line += (
+                f"; the edit also touches {', '.join(self.unmodelled)}, which carry no "
+                "wild-type flux, so the weakening cannot be expressed on them"
+            )
+        return line
 
     def to_record(self) -> dict[str, object]:
         """Flat export row."""
@@ -283,12 +346,15 @@ class Intervention:
         return {
             "reaction_id": self.reaction_id,
             "genes": ";".join(self.genes),
+            "gene_names": ";".join(self.gene_names),
             "mode": self.mode,
             "action": self.action_name,
             "level": self.level,
             "reference_flux": self.reference_flux,
             "lower_bound": self.lower_bound,
             "upper_bound": self.upper_bound,
+            "reactions_constrained": ";".join(rid for rid, _, _ in self.bounds),
+            "side_effects": ";".join(self.side_effects),
         }
 
 
@@ -302,26 +368,35 @@ class ActionNotApplicable(ValueError):
 
 
 def build_intervention(
-    model: Model, reaction_id: str, action: Action, reference_flux: float
+    model: Model,
+    reaction_id: str,
+    action: Action,
+    reference_fluxes: Mapping[str, float],
 ) -> Intervention:
-    """Turn a chosen ACT move on a chosen reaction into concrete bounds.
+    """Turn a chosen ACT move into the gene edit that achieves it, and its bounds.
+
+    The move names a reaction; what is applied is the consequence of deleting or weakening the
+    minimal gene set behind it, which is frequently more than that one reaction. Resolving it
+    here rather than at report time is what makes CMM's viability rule a rule about strains
+    that can be built: a deletion whose collateral kills the cell is reverted by the engine
+    like any other unviable move, instead of surviving to the end and failing in a flask.
 
     A knockdown needs a non-zero wild-type flux to be half *of*, and raises
     :class:`ActionNotApplicable` without one rather than quietly becoming something else. A
-    knockout is always defined, including on a zero-flux reaction — where it changes nothing
-    today, which the engine's own re-solve will show, but closes a route the cell could
-    otherwise escape down once another deletion lands.
+    knockout is always defined, including on a zero-flux reaction \u2014 where it changes
+    nothing today, which the engine's own re-solve will show, but closes a route the cell
+    could otherwise escape down once another deletion lands.
     """
 
     if action.mode is None:
         raise ActionNotApplicable(
             f"{action.name!r} is a {action.kind} move and does not change a reaction"
         )
-    reaction = model.reactions.get_by_id(reaction_id)
-    genes = tuple(sorted(gene.id for gene in reaction.genes))
-    lower, upper = float(reaction.lower_bound), float(reaction.upper_bound)
-    reference = float(reference_flux)
+    edit = resolve_gene_edit(model, reaction_id)
+    names = gene_names(model, edit.genes)
+    reference = float(reference_fluxes.get(reaction_id, 0.0))
     level = float(action.level if action.level is not None else 0.0)
+    readable = tuple(names.get(gene, gene) for gene in edit.genes)
 
     if action.mode == "knockout":
         return Intervention(
@@ -329,10 +404,10 @@ def build_intervention(
             mode="knockout",
             level=0.0,
             reference_flux=reference,
-            lower_bound=0.0,
-            upper_bound=0.0,
             action_name=action.name,
-            genes=genes,
+            genes=edit.genes,
+            gene_names=readable,
+            bounds=tuple((rid, 0.0, 0.0) for rid in edit.blocks),
         )
 
     if abs(reference) <= FLUX_EPSILON:
@@ -341,17 +416,39 @@ def build_intervention(
             f"which is {reference:.3g}: there is nothing to halve"
         )
 
-    cap = abs(level * reference)
-    # Cap the magnitude without opening a direction the reaction did not already have.
+    # Weakening the gene set weakens every reaction that set alone carries. The cap is each
+    # reaction's own wild-type flux, because that is the quantity the level is a fraction of.
+    bounds: list[tuple[str, float, float]] = []
+    unmodelled: list[str] = []
+    for rid in edit.blocks:
+        affected = model.reactions.get_by_id(rid)
+        own = float(reference_fluxes.get(rid, 0.0))
+        if abs(own) <= FLUX_EPSILON:
+            # Half of nothing is nothing, and writing zero here would knock the reaction out
+            # rather than weaken it. Say so instead of doing the wrong thing quietly.
+            if rid != reaction_id:
+                unmodelled.append(rid)
+            continue
+        cap = abs(level * own)
+        # Cap the magnitude without opening a direction the reaction did not already have.
+        bounds.append(
+            (
+                rid,
+                max(float(affected.lower_bound), -cap),
+                min(float(affected.upper_bound), cap),
+            )
+        )
+
     return Intervention(
         reaction_id=reaction_id,
         mode="knockdown",
         level=level,
         reference_flux=reference,
-        lower_bound=max(lower, -cap),
-        upper_bound=min(upper, cap),
         action_name=action.name,
-        genes=genes,
+        genes=edit.genes,
+        gene_names=readable,
+        bounds=tuple(bounds),
+        unmodelled=tuple(unmodelled),
     )
 
 

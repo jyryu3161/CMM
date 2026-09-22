@@ -226,6 +226,26 @@ def _run_jev(args: argparse.Namespace) -> int:
                 f"growth {row['growth']:7.4f}{flag}"
             )
         print()
+    if not args.quiet:
+        # The design is the headline; the per-target evidence is the rest of what the run
+        # learned, and a reader weighing a different trade-off needs it.
+        rounds = result.rounds_frame()
+        if not rounds.empty and "shortfall" in rounds:
+            print("What each round asked, reached, and left undone:")
+            for _, row in rounds.iterrows():
+                gap = str(row["shortfall"] or "nothing measurable")
+                print(
+                    f"  round {int(row['round'])} \u2014 {row['question_answered']}: "
+                    f"{row['product_flux']:.4g} at growth {row['growth']:.4g}; "
+                    f"{row['stopped_because']}; {gap}"
+                )
+            distinct = rounds["design_signature"].nunique()
+            print(
+                f"  {distinct} distinct design(s) over {len(rounds)} round(s). The headline "
+                "is the best of them; the rest are what a laboratory that cannot build it "
+                "would use."
+            )
+            print()
     print(
         json.dumps(
             {
@@ -239,6 +259,7 @@ def _run_jev(args: argparse.Namespace) -> int:
                 "n_ticks": summary["n_ticks"],
                 "usage": summary["usage"],
                 "baseline_comparison": summary["baseline_comparison"],
+                "targets": summary["targets"],
                 # Stated on every run: the CMM solves repeat, the agent's choices need not.
                 "notes": summary["notes"],
             },

@@ -96,6 +96,9 @@ output to parse. Each tick, CMM renders the metabolic state as compact JSON — 
 to the product, ATP and redox balance, what each active intervention actually bought — and JEV
 picks one move: delete a gene, weaken it to half, withdraw an earlier move, go back to the
 best design the run has found, run OptKnock or an FSEOF or envelope scan, or end the round.
+A move names a reaction and is applied as the **gene edit** that achieves it — the minimal set
+whose loss stops that reaction, and every other reaction those genes also stop — so a design
+that cannot be built is refused while it is being played rather than discovered afterwards.
 CMM applies it, re-solves with pFBA and MOMA, and redraws the flux map. In the desktop
 application's *JEV Agent* tab the map moves while the agent is still playing, progress bars
 count the rounds and the steps, a running total shows what the run has spent, a Stop button
@@ -116,6 +119,17 @@ the worst the design gives while growing as fast as it can, so a pFBA number the
 never produce is not mistaken for a result — and **what the product is short of**, measured by
 offering a unit of NADH, NADPH or ATP and re-maximising. Carbon routing and cofactor
 limitation call for completely different moves, and nothing else in CMM tells them apart.
+
+**A run returns a portfolio, not one design.** Each round is an independent attempt starting
+from the wild type, and ends with a diagnosis carried into the next: moves still measured to
+pay that it did not take, the cofactor the product was still short of, budget it never spent,
+moves the rules refused. Telling the agent what earlier rounds found was measured and was not
+enough — six rounds gave two distinct designs and four exact repeats — so one reaction of each
+design found is withheld from later rounds, the integer cut OptKnock uses to enumerate
+alternatives. Each round then answers a different question: *the best design that does not use
+the last one's key reaction*, which is what a laboratory that cannot edit that gene needs. On
+the shipped example this took the run from 2 distinct designs to 5, with the same headline. `06_targets/targets.csv` then states the case for and against every target
+the run touched, measured rather than judged, and deliberately not collapsed into a ranking.
 
 **CMM owns the rules and JEV owns the strategy.** A move that makes the model infeasible or
 pushes growth below the configured floor is reverted by CMM whatever the agent predicted, and

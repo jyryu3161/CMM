@@ -51,7 +51,7 @@ def window(app):
 
 
 def test_the_tab_exists_and_sits_last(window) -> None:
-    assert window._tab_index("JEV Agent") == window.tabs.count() - 1
+    assert window._tab_index("Agent") == window.tabs.count() - 1
 
 
 def test_without_an_api_key_the_tab_explains_itself_and_nothing_else_breaks(
@@ -91,7 +91,7 @@ def test_the_map_is_redrawn_once_per_move_while_the_run_is_still_going(
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     window._refresh_jev_inputs()
-    window._goto_tab("JEV Agent")
+    window._goto_tab("Agent")
     window.jev_product_combo.setCurrentText("EX_succ_e")
     window.jev_rounds_spin.setValue(1)
     window.jev_ticks_spin.setValue(2)
@@ -131,7 +131,7 @@ def test_the_progress_and_decision_figures_render_after_a_run(
 ) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     window._refresh_jev_inputs()
-    window._goto_tab("JEV Agent")
+    window._goto_tab("Agent")
     window.jev_product_combo.setCurrentText("EX_succ_e")
     window.jev_rounds_spin.setValue(1)
     window.jev_ticks_spin.setValue(2)
@@ -166,7 +166,7 @@ def test_the_progress_bars_count_rounds_and_steps_separately(
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     window._refresh_jev_inputs()
-    window._goto_tab("JEV Agent")
+    window._goto_tab("Agent")
     window.jev_product_combo.setCurrentText("EX_succ_e")
     window.jev_rounds_spin.setValue(2)
     window.jev_ticks_spin.setValue(3)
@@ -191,7 +191,7 @@ def test_the_brief_box_reaches_the_run(window, monkeypatch) -> None:
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     window._refresh_jev_inputs()
-    window._goto_tab("JEV Agent")
+    window._goto_tab("Agent")
     window.jev_product_combo.setCurrentText("EX_succ_e")
     window.jev_rounds_spin.setValue(1)
     window.jev_ticks_spin.setValue(1)
@@ -235,7 +235,7 @@ def test_the_flux_map_keeps_its_space(window, monkeypatch) -> None:
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     window._refresh_jev_inputs()
-    window._goto_tab("JEV Agent")
+    window._goto_tab("Agent")
     window.jev_product_combo.setCurrentText("EX_succ_e")
     window.jev_rounds_spin.setValue(1)
     window.jev_ticks_spin.setValue(2)
@@ -261,7 +261,7 @@ def test_a_move_that_is_not_about_a_reaction_does_not_name_one(
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     window._refresh_jev_inputs()
-    window._goto_tab("JEV Agent")
+    window._goto_tab("Agent")
     window.jev_product_combo.setCurrentText("EX_succ_e")
     window.jev_rounds_spin.setValue(1)
     window.jev_ticks_spin.setValue(1)
@@ -288,7 +288,7 @@ def test_the_dashboard_shows_what_the_agent_weighed(window, monkeypatch) -> None
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     window._refresh_jev_inputs()
-    window._goto_tab("JEV Agent")
+    window._goto_tab("Agent")
     window.jev_product_combo.setCurrentText("EX_succ_e")
     window.jev_rounds_spin.setValue(1)
     window.jev_ticks_spin.setValue(1)
@@ -329,7 +329,7 @@ def test_the_key_can_be_saved_and_cleared(window, monkeypatch, tmp_path) -> None
     window._refresh_jev_inputs()
     assert not window.jev_run_btn.isEnabled()
     assert credentials.key_source() == "none"
-    assert "JEV menu" in window.jev_summary.text()
+    assert "Agent menu" in window.jev_summary.text()
 
     credentials.save_key("sk-or-v1-testkey0000")
     window._refresh_jev_inputs()
@@ -359,11 +359,11 @@ def test_the_key_menu_items_exist(window) -> None:
     jev_menu = next(
         action.menu()
         for action in window.menuBar().actions()
-        if action.text().replace("&", "") == "JEV"
+        if action.text().replace("&", "") == "Agent"
     )
     labels = [action.text() for action in jev_menu.actions() if action.text()]
-    assert "Set API Key…" in labels
-    assert "Clear API Key" in labels
+    assert "Set OpenRouter API Key…" in labels
+    assert "Clear OpenRouter API Key" in labels
     assert "Where is my key?" in labels
 
 
@@ -376,7 +376,7 @@ def test_the_run_reports_what_it_has_spent(window, monkeypatch) -> None:
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     window._refresh_jev_inputs()
-    window._goto_tab("JEV Agent")
+    window._goto_tab("Agent")
     window.jev_product_combo.setCurrentText("EX_succ_e")
     window.jev_rounds_spin.setValue(1)
     window.jev_ticks_spin.setValue(2)
@@ -418,7 +418,7 @@ def test_stopping_is_asked_for_once_and_keeps_the_run(window, monkeypatch) -> No
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     window._refresh_jev_inputs()
-    window._goto_tab("JEV Agent")
+    window._goto_tab("Agent")
 
     assert not window.jev_stop_btn.isEnabled(), "nothing to stop before a run"
     window._jev_stop_requested = False
@@ -439,7 +439,7 @@ def test_a_played_move_can_be_put_back_on_the_map(window, monkeypatch) -> None:
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     window._refresh_jev_inputs()
-    window._goto_tab("JEV Agent")
+    window._goto_tab("Agent")
     window.jev_product_combo.setCurrentText("EX_succ_e")
     window.jev_rounds_spin.setValue(1)
     window.jev_ticks_spin.setValue(3)
@@ -463,3 +463,68 @@ def test_a_played_move_can_be_put_back_on_the_map(window, monkeypatch) -> None:
     )
     window.jev_table.selectRow(0)
     assert drawn == [window._jev_frames[0][0].tick_index]
+
+
+def test_the_key_is_reachable_without_finding_the_menu(
+    window, monkeypatch, tmp_path
+) -> None:
+    """A credential that lives only in a menu is a credential nobody finds.
+
+    It is also a prerequisite for the run button working at all, so it belongs beside the
+    run button and it has to say whether one is in force.
+    """
+
+    from cmm.jev import credentials
+
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    window._refresh_jev_inputs()
+
+    assert window.jev_key_btn.text() == "Set key…"
+    assert "no key" in window.jev_key_label.text()
+    assert not window.jev_run_btn.isEnabled()
+    # And the reason is on screen, not in a tooltip.
+    assert not window.jev_hint.isHidden()
+    assert "Set key" in window.jev_hint.text()
+
+    credentials.save_key("sk-or-v1-testkey0000")
+    window._refresh_jev_inputs()
+    assert window.jev_key_btn.text() == "Change key…"
+    assert window.jev_key_label.text().endswith("0000)")
+    assert window.jev_run_btn.isEnabled()
+    assert window.jev_hint.isHidden()
+    credentials.clear_key()
+
+
+def test_the_web_lookup_says_what_it_needs_instead_of_going_quiet(
+    window, monkeypatch
+) -> None:
+    """Ticking the box greyed the run button out with no visible reason.
+
+    The requirement is real — a literature lookup aimed at the wrong species returns an
+    answer that is confident and wrong — but a disabled button that does not say why reads
+    as a broken button rather than as a question.
+    """
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    window._refresh_jev_inputs()
+    window._goto_tab("Agent")
+    assert window.jev_run_btn.isEnabled()
+    assert window.jev_hint.isHidden()
+
+    window.jev_web_check.setChecked(True)
+    assert not window.jev_run_btn.isEnabled()
+    assert not window.jev_hint.isHidden()
+    assert "organism" in window.jev_hint.text()
+    assert "Untick" in window.jev_hint.text(), "the way out has to be named too"
+
+    # One field, and it runs.
+    window.jev_organism.setText("Escherichia coli")
+    assert window.jev_run_btn.isEnabled()
+    assert window.jev_hint.isHidden()
+
+    # Or untick it, and it runs without the lookup.
+    window.jev_organism.setText("")
+    assert not window.jev_run_btn.isEnabled()
+    window.jev_web_check.setChecked(False)
+    assert window.jev_run_btn.isEnabled()

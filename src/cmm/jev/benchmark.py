@@ -131,7 +131,13 @@ def compare_with_baselines(
 
     # The agent's design, if there is one, is what the headroom row probes on top of; with no
     # design it probes the wild type, which is the honest thing to compare a wild type to.
-    bounds = {i.reaction_id: (i.lower_bound, i.upper_bound) for i in jev_interventions}
+    # Every reaction each gene edit constrains, not only the one the agent named: the row has
+    # to score the strain that would actually be built.
+    bounds = {
+        rid: (low, high)
+        for intervention in jev_interventions
+        for rid, low, high in intervention.bounds
+    }
     rows.append(
         _amplification_headroom_row(model, product, biomass, growth_floor, bounds)
     )

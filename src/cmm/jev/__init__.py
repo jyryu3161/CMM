@@ -38,6 +38,8 @@ from cmm.jev._transport import (
     score_question,
 )
 from cmm.jev.credentials import clear_key, key_path, key_source, save_key, stored_key
+from cmm.jev.genes import GeneEdit, resolve_gene_edit
+from cmm.jev.targets import TargetReport, build_target_reports, targets_frame
 from cmm.jev.actions import (
     ACT_ACTIONS,
     ACTION_CATALOGUE,
@@ -82,6 +84,7 @@ __all__ = [
     "DEFAULT_QUESTION_SET",
     "DecisionResult",
     "GameState",
+    "GeneEdit",
     "Intervention",
     "JevAnswer",
     "JevClient",
@@ -95,10 +98,12 @@ __all__ = [
     "QuestionSet",
     "RoundRecord",
     "ScanCache",
+    "TargetReport",
     "TickRecord",
     "applicable_actions",
     "build_candidates",
     "build_intervention",
+    "build_target_reports",
     "choice_question",
     "clear_key",
     "cofactor_balance",
@@ -107,8 +112,10 @@ __all__ = [
     "key_source",
     "noul_question",
     "product_distances",
+    "resolve_gene_edit",
     "run_jev_design",
     "save_key",
     "stored_key",
     "score_question",
+    "targets_frame",
 ]

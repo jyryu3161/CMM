@@ -16,6 +16,8 @@ Those numbers are, per candidate reaction:
 * **what it does to redox** — net NADH and NADPH stoichiometry
 * **whether removing it kills the cell** — filled in once an ``essentiality_scan`` has run
 * **whether it pulls the product** — FSEOF slope, filled in once an ``fseof_scan`` has run
+* **what editing it costs** — the minimal gene set behind it, whether those are isozymes that
+  must all go, and which other reactions the edit stops
 * **what deleting or halving it actually does** — measured by CMM, not inferred, and
   refreshed whenever the design changes
 * **what the literature says** — filled in only when web research is enabled
@@ -32,6 +34,8 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 
 from cobra import Model, Reaction
+
+from cmm.jev.genes import gene_names, resolve_gene_edit
 
 #: Cofactor pools, keyed by the part of a formula that does not change with protonation or
 #: naming: the counts of carbon, nitrogen, phosphorus and sulfur. This is how the pools are
@@ -356,6 +360,11 @@ class CandidateEvidence:
     #: numbers that decide the move.
     deletion_gain: float | None = None
     knockdown_gain: float | None = None
+    #: How this reaction is actually edited: the minimal gene set, whether they are isozymes
+    #: that must all go, and what else the edit stops. This is the difference between a move
+    #: and a buildable move, and the agent cannot weigh it if it is not on the board.
+    gene_edit: str = ""
+    side_effects: tuple[str, ...] = ()
     design_note: str = ""
     literature: str = ""
     citations: tuple[str, ...] = ()
@@ -415,9 +424,13 @@ class CandidateEvidence:
                 parts.append(f"measured: {label} changes the product by 0")
         if self.design_note:
             parts.append(self.design_note)
-        if self.genes:
+        if self.gene_edit:
             # The moves are gene edits and the brief names genes, so a board that named only
             # reactions left the agent unable to connect "delete ldhA" to any option it had.
+            # It also carries what the edit costs: three isozymes is three times the work of
+            # one gene, and a shared gene takes other reactions down with it.
+            parts.append(f"to edit it you must delete {self.gene_edit}")
+        elif self.genes:
             parts.append(f"genes {', '.join(self.genes)}")
         if self.subsystem:
             parts.append(f"subsystem {self.subsystem}")
@@ -469,6 +482,8 @@ class CandidateEvidence:
             "fseof_slope": self.fseof_slope,
             "deletion_gain": self.deletion_gain,
             "knockdown_gain": self.knockdown_gain,
+            "gene_edit": self.gene_edit,
+            "side_effects": ";".join(self.side_effects),
             "n_citations": len(self.citations),
         }
 
@@ -906,11 +921,16 @@ def build_candidates(
             continue
         reference = float(reference_fluxes.get(reaction.id, 0.0))
         net_atp = net(reaction, "ATP", ATP_STEM)
+        edit = resolve_gene_edit(model, reaction.id)
+        names = gene_names(model, edit.genes)
         evidence[reaction.id] = CandidateEvidence(
             reaction_id=reaction.id,
             name=reaction.name or reaction.id,
             subsystem=str(getattr(reaction, "subsystem", "") or ""),
-            genes=tuple(sorted(gene.id for gene in reaction.genes)),
+            genes=tuple(names.get(gene, gene) for gene in edit.genes)
+            or tuple(sorted(gene.id for gene in reaction.genes)),
+            gene_edit=edit.describe(names),
+            side_effects=edit.side_effects,
             reference_flux=reference,
             current_flux=float(current_fluxes.get(reaction.id, 0.0)),
             lower_bound=float(reaction.lower_bound),
@@ -1032,6 +1052,11 @@ class GameState:
     #: One line per completed round: what it ended with and what that was worth. Shown so a
     #: later round can either try something different or go back to what worked.
     previous_rounds: tuple[str, ...] = ()
+    #: The distinct designs earlier rounds ended on, shortest first. Shown so a round can
+    #: deliberately go somewhere else: a run of six rounds that returns the same design six
+    #: times has produced one result, not six, and the agent cannot avoid that if it cannot
+    #: see what has already been found.
+    designs_found: tuple[str, ...] = ()
     #: Free text from the person running the study: published targets, a growth rate they
     #: need, a cofactor they believe matters. Guidance the model cannot contain, shown first
     #: because it is the only part of the screen that did not come out of the solver.
@@ -1098,6 +1123,7 @@ class GameState:
             },
             "active_interventions": list(self.active_interventions),
             "previous_rounds": list(self.previous_rounds),
+            "designs_already_found": list(self.designs_found),
             "already_ruled_out": list(self.ruled_out),
             "history": list(self.history[-10:]),
             "records": [

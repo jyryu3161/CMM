@@ -605,14 +605,14 @@ class CmmMainWindow(JevTabMixin, QMainWindow):
             lambda: self._in_tab("Flux Map", self.render_flux_map),
         )
 
-        jev = bar.addMenu("&JEV")
-        jev.addAction("Let JEV Play…", lambda: self._goto_tab(JEV_TAB_NAME))
+        jev = bar.addMenu("&Agent")
+        jev.addAction("Let the Agent Play…", lambda: self._goto_tab(JEV_TAB_NAME))
         jev.addSeparator()
         jev.addAction("Show Run Progress", self.show_jev_progress)
         jev.addAction("Show Last Decision", self.show_jev_last_decision)
         jev.addSeparator()
-        jev.addAction("Set API Key…", self.set_jev_api_key)
-        jev.addAction("Clear API Key", self.clear_jev_api_key)
+        jev.addAction("Set OpenRouter API Key…", self.set_jev_api_key)
+        jev.addAction("Clear OpenRouter API Key", self.clear_jev_api_key)
         jev.addAction("Where is my key?", self.show_jev_api_key_status)
 
         model_menu = bar.addMenu("&Model")
@@ -894,7 +894,9 @@ class CmmMainWindow(JevTabMixin, QMainWindow):
             "Omics": self.omics_table,
             "Revert Metabolism": self.revert_table,
             "Transform (A→B)": self.transform_table,
-            JEV_TAB_NAME: self.jev_table,
+            # Whichever of the JEV tab's two tables is in front, so Export always exports
+            # what the user is looking at.
+            JEV_TAB_NAME: self.jev_lower_tabs.currentWidget(),
         }.get(name)
 
     def _active_figure(self):

@@ -1,4 +1,4 @@
-# JEV agent: succinate in anaerobic *E. coli*
+# Agent: succinate in anaerobic *E. coli*
 
 A decision model plays `e_coli_core` to raise succinate export, one move at a time. The
 condition is the same as the [SC-01 succinate example](../production-targets/README.md) —
@@ -26,8 +26,40 @@ R3T2 knockdown_50 on ACKr → product 9.946, growth 0.05472
 ```
 
 Every round starts again from the wild type — round 2 opens on `PFL` at 0.678, not on round
-1's 9.381 — and carries forward only the record of what earlier rounds reached, which is why
-`restore_best_design` exists.
+1's 9.381 — and carries forward only what earlier rounds learned.
+
+## A portfolio, not one design
+
+Each round ends with a diagnosis, printed and written to `02_game/rounds.csv`, and each is
+asked a *different* question: one reaction of every design already found is withheld, so a
+later round has to reach somewhere else.
+
+```
+What each round asked, reached, and left undone:
+  round 1 — best design available: 9.381 at growth 0.08559; the agent judged no remaining
+    move worth making; the product was still NADPH-limited: one more unit per hour would have
+    bought +1.06 more; it finished with 2 unused knockdown(s)
+  round 4 — best design without PYK: 9.946 at growth 0.05472; …
+  5 distinct design(s) over 6 round(s). The headline is the best of them; the rest are what a
+  laboratory that cannot build it would use.
+```
+
+Telling the agent that a design had already been found was measured and was not enough: six
+rounds gave **two** distinct designs and four exact repeats, because every round starts from
+the same wild type and plays the same game. The cut — the device OptKnock uses to enumerate
+alternative designs — took the same run to **five** distinct designs with the same headline.
+
+## Every target, for and against
+
+`06_targets/targets.csv` has one row per reaction the run acted on **or merely measured**:
+
+| reaction | genes | measured | for | against |
+|---|---|---|---|---|
+| `ACKr` | purT, ackA, tdcD | halving it +0.035 | in the best design; the cell grows without it | needs 3 genes (isozymes), not one |
+| `SUCCt2_2` | dctA | deleting it −9.9 | — | a single-gene edit, but the same gene runs `FUMt2_2` and `MALt2_2`, which the edit stops too |
+
+They are not scored against each other. "Raises the product by 0.035" and "needs three
+isozymes deleted" are not commensurable, and the trade belongs to whoever builds the strain.
 
 ## What it is measured against
 

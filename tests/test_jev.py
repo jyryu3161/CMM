@@ -262,7 +262,7 @@ def test_a_knockdown_caps_the_magnitude_without_opening_a_direction(
     reaction = anaerobic_core.reactions.get_by_id("PFL")
     reaction.bounds = (0.0, 1000.0)
     intervention = build_intervention(
-        anaerobic_core, "PFL", ACTION_CATALOGUE["knockdown_50"], reference_flux=17.8
+        anaerobic_core, "PFL", ACTION_CATALOGUE["knockdown_50"], {"PFL": 17.8}
     )
     assert intervention.upper_bound == pytest.approx(8.9)
     assert intervention.lower_bound == 0.0  # the reaction was irreversible; it stays so
@@ -273,34 +273,88 @@ def test_a_knockdown_on_a_zero_flux_reaction_is_refused_not_reinterpreted(
 ) -> None:
     with pytest.raises(ActionNotApplicable, match="nothing to halve"):
         build_intervention(
-            anaerobic_core,
-            "FRD7",
-            ACTION_CATALOGUE["knockdown_50"],
-            reference_flux=0.0,
+            anaerobic_core, "FRD7", ACTION_CATALOGUE["knockdown_50"], {"FRD7": 0.0}
         )
 
 
-def test_a_deletion_names_the_genes_it_deletes(anaerobic_core) -> None:
-    """The moves are gene edits, so a design row that names only a reaction id is a row a
-    wet-lab reader cannot act on."""
+def test_a_move_is_resolved_to_the_gene_set_that_achieves_it(anaerobic_core) -> None:
+    """Deleting a reaction and deleting its genes are not the same operation.
+
+    ``ACKr`` is ``b2296 or b3115 or b1849``. Deleting *ackA*, the textbook acetate-branch
+    gene, leaves two isozymes: measured on this model, succinate stays at 0 and growth at
+    0.2117. The move has to take all three, and the record has to say so, or the design is
+    one a laboratory would build and find inert.
+    """
 
     intervention = build_intervention(
-        anaerobic_core, "LDH_D", ACTION_CATALOGUE["knockout"], reference_flux=0.0
+        anaerobic_core, "ACKr", ACTION_CATALOGUE["knockout"], {"ACKr": 8.5}
     )
-    expected = tuple(sorted(g.id for g in anaerobic_core.reactions.LDH_D.genes))
-    assert intervention.genes == expected
-    assert expected[0] in intervention.describe()
+    assert set(intervention.genes) == {"b2296", "b3115", "b1849"}
+    assert "ackA" in intervention.describe()
+    # No shared gene here, so the edit stops exactly the reaction it was aimed at.
+    assert intervention.side_effects == ()
 
 
-def test_an_intervention_converts_to_the_bound_cmm_already_applies(
+def test_a_complex_needs_only_one_subunit_gone(anaerobic_core) -> None:
+    """The other direction: ``THD2`` is ``b1602 and b1603``, so either subunit suffices and
+    naming both would overstate the work."""
+
+    intervention = build_intervention(
+        anaerobic_core, "THD2", ACTION_CATALOGUE["knockout"], {"THD2": 0.0}
+    )
+    assert len(intervention.genes) == 1
+    assert intervention.genes[0] in {"b1602", "b1603"}
+    # NADTRHD is `b3962 or (b1602 and b1603)`, so one subunit does not stop it.
+    assert "NADTRHD" not in intervention.side_effects
+
+
+def test_a_shared_gene_takes_its_other_reactions_with_it(anaerobic_core) -> None:
+    """The consequence CMM now applies rather than discovering at report time.
+
+    ``SUCCt2_2`` is run by *dctA*, which also runs ``FUMt2_2`` and ``MALt2_2``. A design that
+    deletes it deletes all three whether anyone intended that or not, so the engine has to
+    apply all three and let the viability rule judge the result.
+    """
+
+    intervention = build_intervention(
+        anaerobic_core, "SUCCt2_2", ACTION_CATALOGUE["knockout"], {"SUCCt2_2": 0.0}
+    )
+    assert intervention.genes == ("b3528",)
+    assert set(intervention.side_effects) == {"FUMt2_2", "MALt2_2"}
+    assert {rid for rid, _, _ in intervention.bounds} == {
+        "SUCCt2_2",
+        "FUMt2_2",
+        "MALt2_2",
+    }
+    assert all(low == 0.0 and high == 0.0 for _, low, high in intervention.bounds)
+    assert "also constrains" in intervention.describe()
+
+
+def test_a_knockdown_says_which_side_effects_it_cannot_express(anaerobic_core) -> None:
+    """Half of nothing is nothing, and writing zero would be a knockout of something the
+    agent never chose. The reaction is named instead of being silently deleted."""
+
+    fluxes = dict(pfba(anaerobic_core).fluxes)
+    intervention = build_intervention(
+        anaerobic_core, "FORti", ACTION_CATALOGUE["knockdown_50"], fluxes
+    )
+    constrained = {rid for rid, _, _ in intervention.bounds}
+    for reaction_id in intervention.unmodelled:
+        assert reaction_id not in constrained
+        assert abs(fluxes.get(reaction_id, 0.0)) <= 1e-9
+    if intervention.unmodelled:
+        assert "cannot be expressed" in intervention.describe()
+
+
+def test_an_intervention_converts_to_the_bounds_cmm_already_applies(
     anaerobic_core,
 ) -> None:
     intervention = build_intervention(
-        anaerobic_core, "PFL", ACTION_CATALOGUE["knockout"], reference_flux=17.8
+        anaerobic_core, "PFL", ACTION_CATALOGUE["knockout"], {"PFL": 17.8}
     )
-    bound = intervention.to_reaction_bound()
-    assert isinstance(bound, ReactionBound)
-    assert (bound.lower_bound, bound.upper_bound) == (0.0, 0.0)
+    bounds = intervention.to_reaction_bounds()
+    assert bounds and all(isinstance(bound, ReactionBound) for bound in bounds)
+    assert all((b.lower_bound, b.upper_bound) == (0.0, 0.0) for b in bounds)
 
 
 # ---------------------------------------------------------------------------
@@ -1302,10 +1356,9 @@ def test_the_comparison_scores_every_method_the_same_way(anaerobic_core) -> None
         comparison_summary,
     )
 
+    reference = dict(pfba(anaerobic_core).fluxes)
     design = tuple(
-        build_intervention(
-            anaerobic_core, rid, ACTION_CATALOGUE["knockout"], reference_flux=0.0
-        )
+        build_intervention(anaerobic_core, rid, ACTION_CATALOGUE["knockout"], reference)
         for rid in ("ACALD", "D_LACt2", "THD2")
     )
     rows = compare_with_baselines(
@@ -2096,6 +2149,10 @@ def test_each_round_is_an_independent_attempt(anaerobic_core_path) -> None:
         run_moma=False,
         seed_with_strain_design=False,
         run_baseline_comparison=False,
+        # This test is about the bounds going back to the wild type, so the cut that forces
+        # later rounds somewhere new is off: with it on, the same first move is deliberately
+        # unavailable, which is a different property and has its own test.
+        require_distinct_rounds=False,
     )
     result = run_jev_design(config, client=client)
 
@@ -2173,12 +2230,10 @@ def test_the_headroom_row_prices_what_the_vocabulary_gave_up(anaerobic_core) -> 
     pytest.importorskip("straindesign")
     from cmm.jev.benchmark import _HEADROOM_LABEL, compare_with_baselines
 
+    reference = dict(pfba(anaerobic_core).fluxes)
     design = tuple(
         build_intervention(
-            anaerobic_core,
-            reaction_id,
-            ACTION_CATALOGUE[action],
-            reference_flux=float(pfba(anaerobic_core).fluxes.get(reaction_id, 0.0)),
+            anaerobic_core, reaction_id, ACTION_CATALOGUE[action], reference
         )
         for reaction_id, action in (
             ("ACALD", "knockout"),
@@ -2210,3 +2265,357 @@ def test_the_headroom_row_prices_what_the_vocabulary_gave_up(anaerobic_core) -> 
     summary = comparison_summary(rows, product="EX_succ_e")
     assert summary["best_deterministic_method"] != _HEADROOM_LABEL
     assert "amplification" in str(summary["verdict"])
+
+
+# ---------------------------------------------------------------------------
+# what a round leaves undone, and what the run learned about each target
+# ---------------------------------------------------------------------------
+
+
+def test_a_round_records_what_it_left_undone(anaerobic_core_path) -> None:
+    """A round that only records its score teaches the next round nothing.
+
+    The shortfall is the useful half: moves the screen still says would pay, the cofactor
+    still limiting the product, budget left unspent. All of it measured against the design
+    the round actually ended on, because a gain measured three moves earlier is a gain
+    against a design that no longer exists.
+    """
+
+    client = ScriptedClient([("PFL", "knockout"), ("end_round", None)] * 6)
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        rounds=2,
+        steps_per_round=4,
+        growth_floor=0.01,
+        candidate_limit=12,
+        run_moma=False,
+        seed_with_strain_design=False,
+        run_baseline_comparison=False,
+    )
+    result = run_jev_design(config, client=client)
+
+    first = result.rounds[0]
+    assert first.stopped_because, "a round has to say why it stopped"
+    assert "agent judged" in first.stopped_because
+    assert first.shortfall, "this round ends with budget in hand and cannot be complete"
+    assert any("unused" in line for line in first.shortfall)
+    # The row carries it too, so the CSV a reader opens is the same thing.
+    row = first.to_row()
+    assert row["stopped_because"] == first.stopped_because
+    assert row["shortfall"]
+
+    # And the next round is shown it, not just the score: the round log the agent reads on
+    # round 2 carries round 1's diagnosis verbatim.
+    second_round_states = [
+        state for state in client.states if state["budget"]["round"] == 2
+    ]
+    assert second_round_states, "the run has to reach a second round"
+    carried = " ".join(second_round_states[0]["previous_rounds"])
+    assert "It stopped because" in carried
+    assert "What it left undone" in carried
+
+
+def test_a_round_that_rediscovers_an_earlier_design_is_told_so(
+    anaerobic_core_path,
+) -> None:
+    """Six rounds returning one design have produced one result, not six.
+
+    The agent cannot avoid that if it cannot see what has already been found, so the state
+    carries the distinct designs and the round log names the repeat outright.
+    """
+
+    client = ScriptedClient([("PFL", "knockout"), ("end_round", None)] * 8)
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        rounds=3,
+        steps_per_round=3,
+        growth_floor=0.01,
+        candidate_limit=12,
+        run_moma=False,
+        seed_with_strain_design=False,
+        run_baseline_comparison=False,
+        screen_interventions=False,
+        # The cut is what stops this happening; here it is off so the labelling can be seen.
+        require_distinct_rounds=False,
+    )
+    result = run_jev_design(config, client=client)
+
+    assert result.rounds[0].repeated is None
+    assert result.rounds[1].repeated == 1, "the same design, found twice"
+    assert result.rounds[2].repeated == 1
+
+    # Round 2 and 3 were shown what round 1 found, exactly once.
+    later = [state for state in client.states if state["budget"]["round"] > 1]
+    assert later, "the run has to reach a second round"
+    found = later[-1]["designs_already_found"]
+    assert len(found) == 1, "a design is listed once however often it is rediscovered"
+    assert "PFL" in found[0]
+
+
+def test_the_target_report_states_the_case_both_ways(anaerobic_core_path) -> None:
+    """The run's headline is one design; this is the rest of what it learned.
+
+    A reader whose strain has to hold a higher growth rate, or who cannot delete three
+    isozymes, wants the second-best target and the reason it came second.
+    """
+
+    client = ScriptedClient([("PFL", "knockout"), ("end_round", None)] * 4)
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        rounds=1,
+        steps_per_round=3,
+        growth_floor=0.01,
+        candidate_limit=12,
+        run_moma=False,
+        seed_with_strain_design=False,
+        run_baseline_comparison=False,
+    )
+    result = run_jev_design(config, client=client)
+
+    reports = result.targets()
+    assert reports, "the run measured a board; every row of it is a result"
+    chosen = next(r for r in reports if r.reaction_id == "PFL")
+    assert chosen.in_best_design is True
+    assert reports[0].in_best_design, "the best design's members are reported first"
+    assert any("best design" in line for line in chosen.pros)
+    assert chosen.genes, "a target a laboratory acts on is named by its genes"
+
+    # Every row states its case from measurements, and a row with no case at all would mean
+    # the report had invented one.
+    assert all(report.pros or report.cons for report in reports)
+
+    # A reaction whose gene edit stops others carries that as a con, in the words of the
+    # measurement rather than a judgement.
+    shared = [r for r in reports if r.side_effects]
+    for report in shared:
+        assert any("also run" in line for line in report.cons)
+
+    frame = result.targets_frame()
+    assert len(frame) == len(reports)
+    assert {"pros", "cons", "gene_edit", "side_effects"} <= set(frame.columns)
+    assert result.summary()["targets"]["n_targets"] == len(reports)
+
+
+def test_every_resolved_gene_set_actually_blocks_its_reaction(anaerobic_core) -> None:
+    """The one assertion that makes the gene layer trustworthy, on every reaction at once.
+
+    The resolver parses the GPR itself, so the risk is that it reads a rule wrongly and
+    produces a gene set the laboratory would delete to no effect. Checking each answer against
+    cobra's own evaluator, for every gene-associated reaction in the model, is what rules that
+    out — and it is checked here as well as inside the resolver because a silent fallback that
+    stopped working would otherwise look like success.
+    """
+
+    from cmm.jev.genes import resolve_gene_edit
+
+    checked = 0
+    for reaction in anaerobic_core.reactions:
+        if not reaction.genes:
+            continue
+        edit = resolve_gene_edit(anaerobic_core, reaction.id)
+        checked += 1
+        assert edit.genes, f"{reaction.id} has genes but resolved to no edit"
+        assert reaction.gpr.eval(list(edit.genes)) is False, (
+            f"deleting {edit.genes} would not stop {reaction.id}"
+        )
+        # Minimal: putting any one gene back brings the reaction back.
+        for gene in edit.genes:
+            kept = [g for g in edit.genes if g != gene]
+            assert reaction.gpr.eval(kept) is not False, (
+                f"{gene} is not needed to stop {reaction.id}; the set is not minimal"
+            )
+        # And the collateral is exactly the set cobra's evaluator stops, no more and no less.
+        expected = {
+            other.id
+            for other in anaerobic_core.reactions
+            if other.genes and other.gpr.eval(list(edit.genes)) is False
+        }
+        assert set(edit.blocks) == expected | {reaction.id}
+    assert checked > 50, "the model should have a substantial GPR surface to check"
+
+
+def test_the_gene_layer_is_deterministic(anaerobic_core) -> None:
+    """Two runs of the same model must resolve the same genes, or a design is not reproducible.
+
+    Where several minimal sets exist the resolver prefers the one doing least collateral
+    damage and breaks the remaining ties on the gene id, so there is nothing left to vary.
+    """
+
+    from cmm.jev.genes import resolve_gene_edit
+
+    for reaction_id in ("ACKr", "THD2", "PFL", "NADTRHD", "ACALDt"):
+        first = resolve_gene_edit(anaerobic_core, reaction_id)
+        second = resolve_gene_edit(anaerobic_core, reaction_id)
+        assert first == second
+
+
+def test_a_reaction_without_genes_is_an_honest_bound_edit(anaerobic_core) -> None:
+    """``ATPM`` has no GPR. The resolver says so rather than inventing a gene."""
+
+    from cmm.jev.genes import resolve_gene_edit
+
+    edit = resolve_gene_edit(anaerobic_core, "ATPM")
+    assert edit.genes == ()
+    assert edit.blocks == ("ATPM",)
+    assert "not a gene edit" in edit.describe()
+
+
+def test_a_read_timeout_is_retried_not_fatal(monkeypatch) -> None:
+    """The failure that killed a live run on its second call.
+
+    ``urllib`` raises ``URLError`` for a connection failure but bare ``TimeoutError`` for a
+    read that times out after the connection is established, and ``TimeoutError`` is not a
+    ``URLError``. Catching only the latter looked correct and let the former through.
+    """
+
+    from cmm.jev._transport import JevClient
+
+    client = JevClient(api_key="sk-or-test", max_retries=2)
+    monkeypatch.setattr(client, "_sleep_before_retry", lambda attempt: None)
+
+    calls: list[int] = []
+
+    class _Response:
+        def read(self):
+            return json.dumps(
+                {
+                    "answers": {
+                        "target": {
+                            "type": "choice",
+                            "choice": "PFL",
+                            "probabilities": {"PFL": 0.9, "end_round": 0.1},
+                        }
+                    },
+                    "model": "typesafe/jev-1.13",
+                }
+            ).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def flaky(request, timeout=None):
+        calls.append(1)
+        if len(calls) == 1:
+            raise TimeoutError("The read operation timed out")
+        return _Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", flaky)
+    from cmm.jev import choice_question
+
+    result = client.decide(
+        {"state": 1},
+        {"target": choice_question("pick", {"PFL": "delete it", "end_round": "stop"})},
+    )
+    assert result["target"].choice == "PFL"
+    assert len(calls) == 2, "the timeout must be retried, not raised"
+
+
+def test_a_network_failure_keeps_what_the_run_already_played(
+    anaerobic_core_path, monkeypatch
+) -> None:
+    """Solver work already done is not thrown away because the network blinked."""
+
+    from cmm.jev._transport import JevTransportError
+
+    class _FailsOnTheThirdCall(ScriptedClient):
+        def decide(self, state, questions, *, model=None):
+            if len(self.asked) >= 3:
+                raise JevTransportError("OpenRouter was unreachable: timed out")
+            return super().decide(state, questions, model=model)
+
+    client = _FailsOnTheThirdCall([("PFL", "knockout")] * 10)
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        rounds=3,
+        steps_per_round=6,
+        growth_floor=0.01,
+        candidate_limit=12,
+        run_moma=False,
+        seed_with_strain_design=False,
+        run_baseline_comparison=False,
+        screen_interventions=False,
+    )
+    result = run_jev_design(config, client=client)
+
+    assert result.ticks, "the moves played before the failure are still results"
+    assert result.best_product_flux > 0.5
+    assert any("unreachable" in note for note in result.notes)
+    assert any("kept and scored" in note for note in result.notes)
+
+
+def test_later_rounds_are_forced_somewhere_new(anaerobic_core_path) -> None:
+    """Telling the agent a design was already found does not stop it finding it again.
+
+    Measured on the live service before this existed: six rounds produced two distinct
+    designs and four exact repeats, because every round starts from the same wild type and
+    sees the same board, so it plays the same game. The cut is the fix — one member of each
+    design already found is withheld, which is how OptKnock enumerates alternatives — and it
+    is stated to the agent rather than applied invisibly.
+    """
+
+    client = ScriptedClient([("PFL", "knockout"), ("end_round", None)] * 10)
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        rounds=3,
+        steps_per_round=3,
+        growth_floor=0.01,
+        candidate_limit=12,
+        run_moma=False,
+        seed_with_strain_design=False,
+        run_baseline_comparison=False,
+        screen_interventions=False,
+        require_distinct_rounds=True,
+    )
+    result = run_jev_design(config, client=client)
+
+    # Round 1 plays PFL; no later round can, so no later round repeats its design.
+    assert result.rounds[0].signature == ("PFL:knockout",)
+    assert all(record.repeated is None for record in result.rounds)
+    assert all("PFL:knockout" not in record.signature for record in result.rounds[1:])
+
+    # And the agent is told, rather than left to wonder where the reaction went.
+    later = [state for state in client.states if state["budget"]["round"] > 1]
+    assert later
+    assert any("may not use PFL" in note for note in later[0]["notes"])
+
+    # The global best still comes from whichever round found it; the cut narrows later
+    # rounds, it does not discard earlier results.
+    assert result.best_product_flux > 0.5
+
+
+def test_the_cut_stops_before_it_empties_the_board(anaerobic_core_path) -> None:
+    """A run that cannot find anything new should say so, not play rounds with nothing left."""
+
+    client = ScriptedClient([("PFL", "knockout"), ("end_round", None)] * 40)
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        biomass="Biomass_Ecoli_core",
+        rounds=4,
+        steps_per_round=2,
+        growth_floor=0.01,
+        # A board as wide as the model has gene-associated reactions (69), so everything left
+        # already fits on it and the guard trips on the first round rather than after sixty.
+        candidate_limit=69,
+        run_moma=False,
+        seed_with_strain_design=False,
+        run_baseline_comparison=False,
+        screen_interventions=False,
+        require_distinct_rounds=True,
+    )
+    result = run_jev_design(config, client=client)
+
+    assert any("too thin to play on" in note for note in result.notes)

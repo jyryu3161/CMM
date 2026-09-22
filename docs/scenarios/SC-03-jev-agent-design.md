@@ -160,7 +160,7 @@ The vocabulary is **down-regulation only**: delete a gene, or weaken it to half.
 
 | Move | Meaning |
 |---|---|
-| `knockout` | delete the reaction's genes: flux forced to zero |
+| `knockout` | delete the genes behind the reaction: flux forced to zero |
 | `knockdown_50` | weaken them: capped at half the **wild-type** flux magnitude |
 | `undo_last` | withdraw the most recent intervention |
 | `fseof_scan`, `essentiality_scan`, `envelope_probe` | run a CMM analysis; the model is unchanged |
@@ -178,6 +178,34 @@ A `knockdown_50` needs a non-zero wild-type flux to be half of, and is not offer
 one. A `knockout` is always offered, including on a reaction carrying nothing today — which is
 not a pointless move: OptKnock's most valuable deletions close routes the cell would only
 switch to once the obvious ones are shut.
+
+### A move is a gene edit, and CMM applies it as one
+
+The agent picks reactions, because that is what flux-based evidence is about. Nobody edits a
+reaction. So before a move is applied it is resolved through the gene-protein-reaction rule
+into the smallest set of genes that achieves it — and into every other reaction that set stops.
+
+The three ways the naive reading goes wrong are all common, and all present in
+`e_coli_core`'s 69 gene-associated reactions:
+
+| | count | what the flat gene list gets wrong |
+|---|---:|---|
+| one gene, one reaction | 27 | nothing |
+| **isozymes (`or`)** | **32** | `ACKr` is `b2296 or b3115 or b1849`. Deleting *ackA*, the textbook acetate-branch gene, leaves two routes and changes nothing — measured, succinate stays at 0.0000 and growth at 0.2117. All three have to go |
+| **complexes (`and`)** | **10** | `THD2` is `b1602 and b1603`, so *either* subunit is enough and naming both overstates the work |
+| **shared genes** | **22** | *dctA* runs `SUCCt2_2`, `FUMt2_2` and `MALt2_2`. Deleting it deletes all three |
+
+Nineteen reactions take others down with them when their genes go. CMM applies that whole
+consequence — bounds on every reaction the edit stops, and the measured deletion and knockdown
+gains screened the same way — so the viability rule becomes a rule about **strains that can be
+built** rather than about bound edits that only exist in silico. A collateral reaction carrying
+no wild-type flux is named rather than forced to zero: half of nothing is nothing, and writing
+zero would turn a knockdown into a knockout of something the agent never chose.
+
+The board carries the burden too, because it is part of the choice: *"to edit it you must
+delete all of purT, ackA, tdcD together (isozymes: any one alone does nothing)"*, or
+*"delete gene dctA — which also stops FUMt2_2, MALt2_2"*. Three isozymes is three times the
+laboratory work of one gene, and the agent cannot weigh that if it is not on the screen.
 
 ### Why there is no amplification
 
@@ -257,6 +285,58 @@ still the wrong number to report here, for two reasons:
 
 If you want the sequential reading, it is the difference between consecutive `product_flux`
 rows in `02_game/ticks.csv`; the `moma_*` columns are deliberately not that.
+
+## What each round left undone
+
+A round that records only its score teaches the next round nothing, so each one ends with a
+diagnosis, carried into every later round's state and written to `02_game/rounds.csv`:
+
+- **why it stopped** — the agent ended it, the steps ran out, nothing was left it could do;
+- **moves still worth making that it did not take**, re-screened against the design the round
+  actually ended on, because a gain measured three moves earlier is a gain against a design
+  that no longer exists;
+- **what the product was still short of** — which cofactor, and what one more unit would buy;
+- **budget it never spent**, and **the moves the rules refused**, which a later round may
+  reach by another route: a deletion refused on the growth floor here can be affordable on a
+  design that spends its growth differently.
+
+### Making the rounds actually differ
+
+Rounds are told what earlier rounds **found**, as distinct designs, and a round that
+reassembles one is labelled as having done so. That labelling was measured and was not enough:
+on the live service, six rounds produced **two** distinct designs and four exact repeats.
+Every round starts from the same wild type and sees the same board, so it plays the same game;
+being told the answer is already known does not change what the board makes look best.
+
+So `require_distinct_rounds` (on by default) applies an **integer cut** — the device OptKnock
+itself uses to enumerate alternative designs. When a round ends on a design, one of its
+members is withheld from every later round: the member with the largest measured contribution,
+because withholding one that bought nothing would leave the same design a substitution away.
+The bans accumulate, which is what turns a six-round run into an enumeration.
+
+It is stated to the agent, under `notes`, rather than applied invisibly — a reaction that
+vanishes from the board with no explanation is a reaction the agent spends steps looking for.
+It stops when the board would be left too thin to play on, and says so. And it never loses the
+answer: the best design is tracked across rounds and reported whichever round found it. What a
+later round cannot do is find it a second time.
+
+## Every target, for and against
+
+`06_targets/targets.csv` has one row per reaction the run acted on **or merely measured**, with
+the case stated both ways. "CMM checked this and it does not pay" is a result; leaving it out
+would make the table a record of the agent's attention rather than of the evidence.
+
+*For*: in the best design; a measured product gain from deleting or halving it; not essential;
+FSEOF says its flux falls as the product is forced up; OptKnock or RobustKnock names it; a
+single-gene edit; published evidence found.
+*Against*: a measured loss or no change; essential, so only the knockdown is available; FSEOF
+says its flux rises with the product; the edit needs several genes; the same genes run other
+reactions the edit stops; CMM refused it, with the reason.
+
+**They are not scored against each other.** "Raises the product by 0.035" and "needs three
+isozymes deleted" are not commensurable, and the trade belongs to whoever is building the
+strain. Every line is read back from a measurement the run already made; nothing is invented
+at report time, because an opinion in a results table is indistinguishable from a measurement.
 
 ## Reading a result
 

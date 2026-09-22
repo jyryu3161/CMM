@@ -1037,7 +1037,7 @@ def test_tab_order_groups_related_analyses(app, ecoli_core):
         "Flux Map",
         "Revert Metabolism",
         "Transform (A→B)",
-        "JEV Agent",
+        "Agent",
     ]
     # Each new tab sits beside the analysis asking a similar question.
     assert names.index("Sampling") == names.index("Simulation") + 1

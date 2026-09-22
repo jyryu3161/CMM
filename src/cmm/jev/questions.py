@@ -114,6 +114,7 @@ class QuestionSet:
         design_full: bool = False,
         proven_design: str = "",
         best_design: str = "",
+        rounds_found: int = 0,
     ) -> dict[str, Mapping[str, object]]:
         """Stage one: which reaction to act on next, or stop, undo, adopt or go back."""
 
@@ -173,6 +174,7 @@ class ProductionV1(QuestionSet):
         design_full: bool = False,
         proven_design: str = "",
         best_design: str = "",
+        rounds_found: int = 0,
     ) -> dict[str, Mapping[str, object]]:
         if not candidates and not design_full:
             raise ValueError(
@@ -225,7 +227,11 @@ class ProductionV1(QuestionSet):
             "that competes with the product rather than flux that feeds it. "
             "The evidence for each option is the record with the same id in the state "
             "above: its wild-type flux, its current flux, how many steps it sits from the "
-            "product, what it does to the ATP and redox pools, and its genes. "
+            "product, what it does to the ATP and redox pools, and what editing it costs. "
+            "That last part matters: a move is made on genes, not on reactions, so a record "
+            "saying the edit also stops other reactions means those will be stopped too, and "
+            "a record naming three isozymes means all three have to be deleted for the move "
+            "to do anything at all. "
             "A record beginning MEASURED reports what CMM found when it actually made the "
             "move on the design as it stands, and outranks every other line, including your "
             "own reasoning about the stoichiometry. "
@@ -238,6 +244,17 @@ class ProductionV1(QuestionSet):
             instructions += (
                 "If the records do not yet say what you need, you may choose a reaction and "
                 "then ask for a scan instead of intervening. "
+            )
+        if rounds_found:
+            instructions += (
+                "Earlier rounds of this run already found the designs listed under "
+                "designs_already_found, and each round's entry under previous_rounds says "
+                "what it left undone. Rebuilding a design that is already there adds nothing "
+                "to the run: prefer a route those rounds did not take, or go after something "
+                "one of them explicitly left on the table. Returning to the best design so "
+                "far is still the right move when the alternatives have been tried and were "
+                "worse \u2014 but say so by choosing restore_best_design rather than by "
+                "reassembling it move by move. "
             )
         instructions += (
             f"Choose {END_ACTION.name} only when no remaining move is expected to help."

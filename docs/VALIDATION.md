@@ -464,6 +464,28 @@ is an ordinary CMM solve. What is validated is the loop, not the agent:
   one-edit design. SC-03 states this in the run's own documentation.
 - Candidates are restricted to reactions carrying a gene association, so a proposal is an
   intervention a laboratory could make rather than a bound edit that only exists in silico.
+- **A move is resolved through the GPR and applied as a gene edit.** `resolve_gene_edit`
+  returns the minimal gene set whose loss stops the chosen reaction — checked against cobra's
+  own `GPR.eval` rather than trusted from the parse — and every other reaction that set stops.
+  The engine applies bounds to all of them, and the intervention screen measures them the same
+  way, so the viability rule judges the strain that would be built. Without this, a reaction
+  deletion and a gene deletion diverge on 42 of `e_coli_core`'s 69 gene-associated reactions:
+  32 have isozymes where one gene achieves nothing (deleting *ackA* alone leaves succinate at
+  0.0000), 10 are complexes where one subunit suffices, and 19 take other reactions down with
+  them. A collateral reaction with zero wild-type flux is reported as unmodelled rather than
+  forced to zero, which would silently convert a knockdown into an unintended knockout.
+- **`require_distinct_rounds` changes what each round is allowed to do, and says so.** One
+  reaction of every design already found is withheld from later rounds, so a round answers
+  "the best design that does not use these" rather than repeating an earlier answer. It is an
+  integer cut, the same device OptKnock uses to enumerate alternative designs. The withheld
+  set is reported per round in `02_game/rounds.csv` and shown to the agent in the state; the
+  global best is tracked across rounds and is never lost to the cut. Turn it off to compare
+  rounds that were all free to find the same thing.
+- **Per-round shortfall and per-target pros and cons are read back, not computed afresh.**
+  `06_targets/targets.csv` and the `shortfall` column of `02_game/rounds.csv` restate
+  measurements the run already made. No line in either is a judgement formed at report time,
+  and the pros and cons are deliberately not collapsed into a score, because a product gain
+  and a three-gene edit are not commensurable quantities.
 - **Knockouts and knockdowns are budgeted separately** (`max_knockouts`, `max_knockdowns`),
   because they are different things for a laboratory to build and a single shared cap is not
   a quantity anyone plans against.

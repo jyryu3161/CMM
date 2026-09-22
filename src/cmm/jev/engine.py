@@ -220,6 +220,18 @@ class JevConfig:
     #: is not cheating: the agent is being handed CMM's best deterministic result and asked to
     #: improve on it, which is the only comparison that means anything.
     seed_with_strain_design: bool = True
+    #: Require each round to reach a design no earlier round already found, by withholding one
+    #: reaction from each design already in hand — the integer cut OptKnock itself uses to
+    #: enumerate alternative designs.
+    #:
+    #: Telling the agent that a design had been found was measured and was not enough: six
+    #: rounds produced two distinct designs and four exact repeats, because every round starts
+    #: from the same wild type and sees the same board, so it plays the same game. A run asked
+    #: for several attempts should return several answers.
+    #:
+    #: It never loses the best design: the global best is tracked across rounds and reported
+    #: whichever round found it. What a later round cannot do is find it again.
+    require_distinct_rounds: bool = True
     #: After the game, score the agent's design against the deterministic methods on the same
     #: problem, every design evaluated the same way. An agent result with nothing to compare
     #: it to is not a result.
@@ -375,6 +387,7 @@ class JevConfig:
             "design_max_knockouts": self.design_max_knockouts,
             "design_max_solutions": self.design_max_solutions,
             "seed_with_strain_design": self.seed_with_strain_design,
+            "require_distinct_rounds": self.require_distinct_rounds,
             "run_baseline_comparison": self.run_baseline_comparison,
             "measure_cofactor_limits": self.measure_cofactor_limits,
             "measure_guaranteed_product": self.measure_guaranteed_product,
@@ -485,7 +498,13 @@ class TickRecord:
 
 @dataclass(frozen=True)
 class RoundRecord:
-    """The checkpoint at the end of a round."""
+    """The checkpoint at the end of a round: what it reached, and what it did not.
+
+    A round that only records its score teaches the next round nothing. The shortfall is the
+    useful half — the moves measured to still pay that this round never took, the cofactor
+    still limiting the product when it stopped, the budget it left unspent — because that is
+    what a later round can act on.
+    """
 
     round_index: int
     n_ticks: int
@@ -494,6 +513,19 @@ class RoundRecord:
     interventions: tuple[str, ...]
     improved: bool
     ended_early: bool
+    #: Why the round stopped: the agent ended it, the steps ran out, nothing was left to try.
+    stopped_because: str = ""
+    #: What this round left on the table, one clause each, in the order they matter.
+    shortfall: tuple[str, ...] = ()
+    #: The design as an order-independent key, so a round that rediscovers an earlier one can
+    #: be told apart from one that found something new.
+    signature: tuple[str, ...] = ()
+    #: The earlier round this one reproduced, if any.
+    repeated: int | None = None
+    #: Reactions this round was not allowed to use, and therefore the question it answers:
+    #: "the best design that does not use these". A portfolio a laboratory can choose from
+    #: needs that question answered, not six attempts at the same one.
+    withheld: tuple[str, ...] = ()
 
     def to_row(self) -> dict[str, object]:
         return {
@@ -505,6 +537,16 @@ class RoundRecord:
             "interventions": "; ".join(self.interventions),
             "improved": self.improved,
             "ended_early": self.ended_early,
+            "stopped_because": self.stopped_because,
+            "shortfall": "; ".join(self.shortfall),
+            "design_signature": "; ".join(self.signature),
+            "repeated_round": self.repeated,
+            "withheld": "; ".join(self.withheld),
+            "question_answered": (
+                "best design available"
+                if not self.withheld
+                else "best design that does not use " + ", ".join(self.withheld)
+            ),
         }
 
 
@@ -529,6 +571,9 @@ class JevResult:
     #: reaction id -> (full literature answer, citation urls). The board carries only an
     #: excerpt; this is the whole thing, so a reader can check what the agent was told.
     literature: Mapping[str, tuple[str, tuple[str, ...]]] = field(default_factory=dict)
+    #: The last evidence the board held for every reaction the run measured, which is what
+    #: :func:`~cmm.jev.targets.build_target_reports` reads to state each target's case.
+    candidates_seen: tuple[CandidateEvidence, ...] = ()
     notes: tuple[str, ...] = ()
     usage: Mapping[str, object] = field(default_factory=dict)
     run_directory: Path | None = None
@@ -554,9 +599,17 @@ class JevResult:
             "best_design": [i.describe() for i in self.best_interventions],
             "question_set": self.config.question_set,
             "baseline_comparison": self.baseline_summary(),
+            "targets": self.targets_summary(),
             "notes": list(self.notes),
             "usage": dict(self.usage),
         }
+
+    def targets_summary(self) -> dict[str, object]:
+        """How many targets the run weighed, and how many of them pay."""
+
+        from cmm.jev.targets import targets_summary
+
+        return dict(targets_summary(self.targets()))
 
     def baseline_summary(self) -> dict[str, object] | None:
         """How the agent's design scored against the deterministic methods, or None."""
@@ -588,6 +641,20 @@ class JevResult:
             columns=["reaction_id", "evidence", "n_sources", "sources"],
         )
 
+    def targets(self):
+        """Every target the run touched, with the case for and against each one."""
+
+        from cmm.jev.targets import build_target_reports
+
+        return build_target_reports(self)
+
+    def targets_frame(self) -> pd.DataFrame:
+        """The per-target pros-and-cons table."""
+
+        from cmm.jev.targets import targets_frame
+
+        return targets_frame(self.targets())
+
     def ticks_frame(self) -> pd.DataFrame:
         return pd.DataFrame([tick.to_row() for tick in self.ticks])
 
@@ -612,7 +679,9 @@ class _Board:
     product: str
     biomass: str
     interventions: list[Intervention] = field(default_factory=list)
-    previous_bounds: list[tuple[str, float, float]] = field(default_factory=list)
+    previous_bounds: list[tuple[tuple[str, float, float], ...]] = field(
+        default_factory=list
+    )
     history: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     scans: ScanCache = field(default_factory=ScanCache)
@@ -631,12 +700,26 @@ class _Board:
     #: something different or go back to what worked. Without it every round starts blind to
     #: what the ones before it achieved.
     round_log: list[str] = field(default_factory=list)
+    #: The distinct designs completed rounds ended on, in the order found. Shown to the agent
+    #: so a later round can deliberately go elsewhere: six rounds returning the same design
+    #: have produced one result, not six.
+    designs_found: list[str] = field(default_factory=list)
+    #: reaction id -> why later rounds may not use it. One member of each design already found,
+    #: so the next round has to reach somewhere else. Stated to the agent rather than applied
+    #: invisibly: a reaction that vanishes from the board with no explanation is a reaction the
+    #: agent will waste steps looking for.
+    round_bans: dict[str, str] = field(default_factory=dict)
     #: The best design the run has seen, and what it scored, so ``restore_best_design`` has
     #: somewhere to go back to.
     best_snapshot: tuple[Intervention, ...] = ()
     best_score: float = float("-inf")
     #: True when the design has changed since the intervention gains were last measured.
     screen_stale: bool = True
+    #: reaction id -> the most recent evidence the board carried for it, kept so the run can
+    #: report on every target it measured and not only on the ones it played. A reaction CMM
+    #: checked and rejected is a result; dropping it would make the report a record of the
+    #: agent's attention rather than of the evidence.
+    candidates_seen: dict[str, CandidateEvidence] = field(default_factory=dict)
     #: reaction id -> the change in product flux measured when that intervention was applied.
     #: Shown next to each active intervention so dead weight is visible: an intervention that
     #: bought nothing still occupies one of the design's places, and withdrawing it is a real
@@ -644,16 +727,22 @@ class _Board:
     contribution: dict[str, float] = field(default_factory=dict)
 
     def apply(self, intervention: Intervention) -> None:
-        reaction = self.model.reactions.get_by_id(intervention.reaction_id)
+        # Every reaction the gene edit constrains, not only the one the agent named. A
+        # shared gene takes its other reactions with it, and applying the bound to the chosen
+        # reaction alone would model a strain that cannot be built.
         self.previous_bounds.append(
-            (
-                intervention.reaction_id,
-                float(reaction.lower_bound),
-                float(reaction.upper_bound),
+            tuple(
+                (
+                    rid,
+                    float(self.model.reactions.get_by_id(rid).lower_bound),
+                    float(self.model.reactions.get_by_id(rid).upper_bound),
+                )
+                for rid, _, _ in intervention.bounds
             )
         )
         self.scan_stack.append(self.scans.snapshot())
-        reaction.bounds = (intervention.lower_bound, intervention.upper_bound)
+        for rid, lower, upper in intervention.bounds:
+            self.model.reactions.get_by_id(rid).bounds = (lower, upper)
         self.interventions.append(intervention)
         self.scans.invalidate()
         self.screen_stale = True
@@ -663,8 +752,8 @@ class _Board:
             return None
         intervention = self.interventions.pop()
         self.contribution.pop(intervention.reaction_id, None)
-        reaction_id, lower, upper = self.previous_bounds.pop()
-        self.model.reactions.get_by_id(reaction_id).bounds = (lower, upper)
+        for reaction_id, lower, upper in self.previous_bounds.pop():
+            self.model.reactions.get_by_id(reaction_id).bounds = (lower, upper)
         # The model is back where it was, so the scans taken before the change are valid
         # again. Clearing them here made the agent re-run the same scan every tick.
         if self.scan_stack:
@@ -943,6 +1032,7 @@ def run_jev_design(
                     excluded=[
                         *(i.reaction_id for i in board.interventions),
                         *exhausted,
+                        *board.round_bans,
                     ],
                     pinned=board.scans.design_notes,
                     limit=config.candidate_limit,
@@ -964,6 +1054,8 @@ def run_jev_design(
 
             used_knockouts = sum(1 for i in board.interventions if i.mode == "knockout")
             used_knockdowns = len(board.interventions) - used_knockouts
+            for evidence in candidates:
+                board.candidates_seen[evidence.reaction_id] = evidence
             state = GameState(
                 product_reaction_id=product,
                 product_flux=current_product,
@@ -992,6 +1084,7 @@ def run_jev_design(
                     else None
                 ),
                 previous_rounds=tuple(board.round_log),
+                designs_found=tuple(board.designs_found),
                 brief=config.brief,
                 candidates=candidates,
                 active_interventions=board.active_labels(),
@@ -1003,6 +1096,19 @@ def run_jev_design(
                 history=tuple(board.history),
                 notes=tuple(
                     [
+                        *(
+                            [
+                                "This round may not use "
+                                + ", ".join(sorted(board.round_bans))
+                                + ", so that it reaches a design an earlier round did not. "
+                                + "; ".join(
+                                    f"{rid}: {why}"
+                                    for rid, why in sorted(board.round_bans.items())
+                                )
+                            ]
+                            if board.round_bans
+                            else []
+                        ),
                         *board.state_notes,
                         *(
                             [board.scans.envelope_note]
@@ -1020,19 +1126,34 @@ def run_jev_design(
                 max_knockdowns=config.max_knockdowns,
             )
 
-            tick = _play_tick(
-                board=board,
-                agent=agent,
-                config=config,
-                question_set=question_set,
-                state=state,
-                candidates=candidates,
-                round_index=round_index,
-                tick_index=tick_index,
-                use_linear_moma=use_linear_moma,
-                transcript=transcript,
-                allowed_modes=config.room_for(used_knockouts, used_knockdowns),
-            )
+            try:
+                tick = _play_tick(
+                    board=board,
+                    agent=agent,
+                    config=config,
+                    question_set=question_set,
+                    state=state,
+                    candidates=candidates,
+                    round_index=round_index,
+                    tick_index=tick_index,
+                    use_linear_moma=use_linear_moma,
+                    transcript=transcript,
+                    allowed_modes=config.room_for(used_knockouts, used_knockdowns),
+                    rounds_found=len(board.designs_found),
+                )
+            except JevTransportError as error:
+                # The network failed after the retries. Everything played up to here is real
+                # and was paid for in solver time, so the run ends the way a stop request
+                # ends it rather than throwing the work away. Observed: a read timeout on the
+                # second call of a six-round run discarded the whole thing.
+                notes.append(
+                    f"the run stopped in round {round_index}, step {tick_index}: {error}. "
+                    "Everything played before that is kept and scored; the design is "
+                    "whatever the run had reached, not whatever it would have reached."
+                )
+                stop_run = True
+                stopped_by_user = True
+                break
             ticks.append(tick)
             board.history.append(tick.headline())
 
@@ -1077,22 +1198,69 @@ def run_jev_design(
         design = (
             "; ".join(i.describe() for i in board.interventions) or "no interventions"
         )
+        design_key = _design_signature(board.interventions)
+        repeated = next(
+            (
+                record.round_index
+                for record in round_records
+                if record.signature == design_key and design_key
+            ),
+            None,
+        )
+        round_ticks = ticks[-ticks_this_round:] if ticks_this_round else []
+        withheld = tuple(sorted(board.round_bans))
+        shortfall = _round_shortfall(
+            board,
+            config,
+            pools=pools,
+            ticks=round_ticks,
+            product=current_product,
+            growth=current_growth,
+        )
+        stopped = _why_the_round_stopped(
+            round_ticks, ended_early=ended_early, steps=config.steps_per_round
+        )
+
         board.round_log.append(
-            f"round {round_index} reached {current_product:.4g} product at "
+            (
+                ""
+                if not withheld
+                else f"(round {round_index} could not use {', '.join(withheld)}, so it "
+                "answers: what is the best design without them?) "
+            )
+            + f"round {round_index} reached {current_product:.4g} product at "
             f"{current_growth:.4g} growth with {design}"
             + (
-                f" (the best round so far reached {board.best_score:.4g})"
+                f" (best so far: {board.best_score:.4g})"
                 if board.best_score > current_product + 1e-9
                 else " (the best round so far)"
+            )
+            + f". It stopped because {stopped}."
+            + (
+                " What it left undone: " + "; ".join(shortfall) + "."
+                if shortfall
+                else " Nothing measurable was left undone."
+            )
+            + (
+                f" NOTE: this is the same design round {repeated} already found, so the two "
+                "rounds produced one result between them, not two."
+                if repeated is not None
+                else ""
             )
         )
 
         acted = any(
-            tick.outcome in ("applied", "undone_by_agent")
-            for tick in ticks[-ticks_this_round:]
+            tick.outcome in ("applied", "undone_by_agent") for tick in round_ticks
         )
         idle_rounds = 0 if acted else idle_rounds + 1
 
+        if config.require_distinct_rounds and design_key:
+            _ban_one_member(board, config, round_index)
+        if design_key and repeated is None:
+            board.designs_found.append(
+                f"round {round_index}: {design} \u2014 {current_product:.4g} product at "
+                f"{current_growth:.4g} growth"
+            )
         round_records.append(
             RoundRecord(
                 round_index=round_index,
@@ -1102,6 +1270,11 @@ def run_jev_design(
                 interventions=board.active_labels(),
                 improved=current_product > round_start_product + 1e-9,
                 ended_early=ended_early,
+                stopped_because=stopped,
+                shortfall=shortfall,
+                signature=design_key,
+                repeated=repeated,
+                withheld=withheld,
             )
         )
         if idle_rounds >= _MAX_IDLE_ROUNDS:
@@ -1178,6 +1351,7 @@ def run_jev_design(
         transcript=tuple(transcript),
         baselines=baselines,
         literature=dict(board.scans.literature),
+        candidates_seen=tuple(board.scans.apply(tuple(board.candidates_seen.values()))),
         notes=tuple([*notes, *board.notes]),
         usage=agent.usage.to_dict(),
     )
@@ -1208,6 +1382,7 @@ def _play_tick(
     use_linear_moma: bool,
     transcript: list[Mapping[str, object]],
     allowed_modes: tuple[str, ...],
+    rounds_found: int = 0,
 ) -> TickRecord:
     """Ask, execute, measure. Returns the frame; the caller re-solves and redraws."""
 
@@ -1225,6 +1400,9 @@ def _play_tick(
             for design in board.scans.designs
             if len(design[1]) <= knockout_room
             and not set(design[1]) & {i.reaction_id for i in board.interventions}
+            # A proven design that reaches through a withheld reaction would walk straight
+            # back into the design the cut exists to move away from.
+            and not set(design[1]) & set(board.round_bans)
         ),
         None,
     )
@@ -1239,6 +1417,7 @@ def _play_tick(
             f"{len(board.best_snapshot)} interventions reaching {board.best_score:.4g}"
             if board.best_snapshot
             and tuple(board.best_snapshot) != tuple(board.interventions)
+            and not {i.reaction_id for i in board.best_snapshot} & set(board.round_bans)
             else ""
         ),
         proven_design=(
@@ -1247,6 +1426,7 @@ def _play_tick(
             if best_design
             else ""
         ),
+        rounds_found=rounds_found,
     )
     stage1 = agent.decide(payload, target_questions)
     _record(transcript, round_index, tick_index, "target", payload, stage1)
@@ -1471,10 +1651,7 @@ def _play_tick(
     # refusing it — was measured, and it cost ten consecutive steps on one run.
     try:
         intervention = build_intervention(
-            board.model,
-            candidate.reaction_id,
-            action,
-            reference_flux=candidate.reference_flux,
+            board.model, candidate.reaction_id, action, board.reference.fluxes
         )
     except ActionNotApplicable as error:
         board.record_failure(candidate.reaction_id, action.name)
@@ -1652,7 +1829,7 @@ def _adopt_design(
                 board.model,
                 reaction_id,
                 ACTION_CATALOGUE["knockout"],
-                reference_flux=float(board.reference.get(reaction_id, 0.0)),
+                board.reference.fluxes,
             )
         except (ActionNotApplicable, KeyError) as error:
             for _ in applied:
@@ -1730,6 +1907,190 @@ def _adopt_design(
         product_flux=new_product,
         growth=new_growth,
     )
+
+
+def _ban_one_member(board: _Board, config: JevConfig, round_index: int) -> None:
+    """Withhold one reaction of the design just found, so the next round reaches elsewhere.
+
+    This is the integer cut OptKnock uses to enumerate alternative designs, in the only form
+    a board of single reactions can express: forbid one member, and every design containing it
+    becomes unreachable. Which member decides how far the next round is pushed, so it is the
+    one that did the most — the largest measured contribution to the product — because
+    banning a member that bought nothing would leave the same design one substitution away.
+
+    Bans accumulate across rounds, which is what makes a six-round run an enumeration rather
+    than six attempts at the same answer. They stop accumulating when the board would be left
+    too thin to play on; a run that cannot find anything new should say so rather than play
+    rounds with nothing on the table.
+    """
+
+    members = [i.reaction_id for i in board.interventions]
+    if not members:
+        return
+    remaining = sum(
+        1
+        for reaction in board.model.reactions
+        if reaction.genes and reaction.id not in board.round_bans
+    )
+    if remaining <= config.candidate_limit:
+        board.notes.append(
+            f"round {round_index} found a design but nothing further was withheld: the "
+            "board would have been left too thin to play on, so later rounds may repeat it"
+        )
+        return
+
+    ranked = sorted(
+        members,
+        key=lambda rid: (-abs(board.contribution.get(rid, 0.0)), rid),
+    )
+    banned = ranked[0]
+    board.round_bans[banned] = (
+        f"it carried the design round {round_index} found. Withholding it is what makes the "
+        "next round answer a different question \u2014 what is the best design without it? "
+        "\u2014 which is the question a laboratory that cannot edit it needs answered"
+    )
+
+
+def _design_signature(interventions: Sequence[Intervention]) -> tuple[str, ...]:
+    """A design as an order-independent key, so two rounds can be compared.
+
+    Order does not make a different strain. Without sorting, the same three deletions applied
+    in two sequences read as two distinct results, which is exactly the illusion of diversity
+    a multi-round run should not produce.
+    """
+
+    return tuple(sorted(f"{i.reaction_id}:{i.action_name}" for i in interventions))
+
+
+def _why_the_round_stopped(
+    ticks: Sequence[TickRecord], *, ended_early: bool, steps: int
+) -> str:
+    """One clause naming what ended the round, for the next round to read."""
+
+    if not ticks:
+        return "it never got a move in"
+    last = ticks[-1]
+    if last.outcome == "end_round":
+        return "the agent judged no remaining move worth making"
+    if len(ticks) >= steps:
+        return f"it used all {steps} of its steps"
+    if last.outcome == "not_applicable":
+        return f"nothing was left it could do ({last.reason})"
+    return "it ran out of moves that changed anything"
+
+
+def _round_shortfall(
+    board: _Board,
+    config: JevConfig,
+    *,
+    pools,
+    ticks: Sequence[TickRecord],
+    product: float,
+    growth: float,
+) -> tuple[str, ...]:
+    """What this round left on the table, measured on the design it ended with.
+
+    Four questions, in the order a next round would ask them. Each is a measurement against
+    the *final* design rather than a memory of what the board said earlier, because a gain
+    measured three moves ago is a gain against a design that no longer exists.
+    """
+
+    lines: list[str] = []
+
+    # 1. Moves this round could still have made and did not. The sharpest of the four: a
+    #    reaction the screen says pays, sitting untouched when the round ended.
+    if config.screen_interventions:
+        board.scans.deletion_gains.clear()
+        board.scans.knockdown_gains.clear()
+        current = board.scans.apply(
+            build_candidates(
+                board.model,
+                product_reaction_id=board.product,
+                reference_fluxes=board.reference.fluxes,
+                current_fluxes=dict(_solve(board.model).fluxes),
+                excluded=[i.reaction_id for i in board.interventions],
+                pinned=board.scans.design_notes,
+                limit=config.candidate_limit,
+                pools=pools,
+            )
+        )
+        if current:
+            _run_scan(board, "intervention_screen", current, config)
+            untaken = sorted(
+                (
+                    (gain, reaction_id, move)
+                    for store, move in (
+                        (board.scans.deletion_gains, "deleting"),
+                        (board.scans.knockdown_gains, "halving"),
+                    )
+                    for reaction_id, gain in store.items()
+                    if gain > 1e-6
+                ),
+                reverse=True,
+            )
+            if untaken:
+                named = ", ".join(
+                    f"{move} {reaction_id} ({gain:+.4g})"
+                    for gain, reaction_id, move in untaken[:3]
+                )
+                lines.append(f"moves still worth making that it did not take: {named}")
+
+    # 2. What the product was short of when it stopped. Carbon routing and cofactor supply
+    #    call for different moves, and nothing else in the run tells them apart.
+    if config.measure_cofactor_limits:
+        limits = cofactor_limitation(
+            board.model,
+            product=board.product,
+            biomass=board.biomass,
+            growth_floor=config.growth_floor,
+            pools=pools,
+        )
+        binding = sorted(
+            ((value, name) for name, value in limits.items() if value > 1e-6),
+            reverse=True,
+        )
+        if binding:
+            value, name = binding[0]
+            lines.append(
+                f"the product was still {name}-limited: one more unit per hour would have "
+                f"bought {value:+.3g} more"
+            )
+
+    # 3. Budget it never spent. A round that ends with edits in hand stopped for a reason
+    #    other than the budget, and the next round should not assume otherwise.
+    used_knockouts = sum(1 for i in board.interventions if i.mode == "knockout")
+    spare = [
+        f"{config.max_knockouts - used_knockouts} unused deletion(s)"
+        if used_knockouts < config.max_knockouts
+        else "",
+        f"{config.max_knockdowns - (len(board.interventions) - used_knockouts)} "
+        "unused knockdown(s)"
+        if len(board.interventions) - used_knockouts < config.max_knockdowns
+        else "",
+    ]
+    spare = [item for item in spare if item]
+    if spare:
+        lines.append("it finished with " + " and ".join(spare))
+
+    # 4. Moves the rules took away from it, which a later round may reach by another route:
+    #    a deletion refused on the growth floor here can be affordable on a design that
+    #    spends its growth differently.
+    refused = [
+        f"{tick.target} ({tick.action})"
+        for tick in ticks
+        if tick.outcome.startswith("reverted")
+    ]
+    if refused:
+        # dict.fromkeys keeps first-seen order while dropping repeats, so a move refused on
+        # five consecutive steps is named once.
+        lines.append("the rules refused " + ", ".join(list(dict.fromkeys(refused))[:4]))
+
+    if growth - config.growth_floor > 1e-6 and product > 1e-9:
+        lines.append(
+            f"it ended {growth - config.growth_floor:.4g} per hour above the growth floor, "
+            "which is room a bolder design could have spent"
+        )
+    return tuple(lines)
 
 
 def _run_scan(
@@ -1825,8 +2186,6 @@ def _run_scan(
         measured = 0
         best: tuple[str, str, float] | None = None
         for candidate in candidates:
-            reaction = board.model.reactions.get_by_id(candidate.reaction_id)
-            saved = reaction.bounds
             for action_name, store in (
                 ("knockout", board.scans.deletion_gains),
                 ("knockdown_50", board.scans.knockdown_gains),
@@ -1836,15 +2195,24 @@ def _run_scan(
                         board.model,
                         candidate.reaction_id,
                         ACTION_CATALOGUE[action_name],
-                        reference_flux=candidate.reference_flux,
+                        board.reference.fluxes,
                     )
                 except ActionNotApplicable:
                     # A knockdown of a flux that is already zero. Not a gap in the screen:
                     # the move does not exist, and the agent is never offered it.
                     continue
-                reaction.bounds = (trial.lower_bound, trial.upper_bound)
+                # The gene edit's whole consequence, so the measured gain is the gain of the
+                # move as it would be built. Screening the chosen reaction alone would report
+                # a number the strain never produces.
+                saved = [
+                    (rid, board.model.reactions.get_by_id(rid).bounds)
+                    for rid, _, _ in trial.bounds
+                ]
+                for rid, low, high in trial.bounds:
+                    board.model.reactions.get_by_id(rid).bounds = (low, high)
                 solution = _solve(board.model)
-                reaction.bounds = saved
+                for rid, bounds in saved:
+                    board.model.reactions.get_by_id(rid).bounds = bounds
                 viable = solution.status == "optimal" and (
                     float(solution.fluxes.get(board.biomass, 0.0))
                     >= config.growth_floor

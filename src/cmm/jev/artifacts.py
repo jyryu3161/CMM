@@ -32,6 +32,7 @@ _STAGE_DIRECTORIES = (
     "03_design",
     "04_agent",
     "05_baseline",
+    "06_targets",
     "model",
     "figures",
 )
@@ -210,6 +211,30 @@ def export_run(result: JevResult, *, model: Model, reference: FluxState) -> JevR
         ),
     )
 
+    # -- 06 every target the run weighed, and the case both ways -------------
+    # The headline is one design; this is the rest of what the run learned. A reader whose
+    # strain has to hold a higher growth rate, or who cannot delete three isozymes, needs the
+    # second-best target and the reason it came second.
+    reports = result.targets()
+    writer.csv(
+        "06_targets/targets.csv",
+        result.targets_frame(),
+        stage="06_targets",
+        role="target_report",
+        method="measured_deletion_and_knockdown_screen",
+        status="complete" if reports else "skipped",
+        reason=(
+            None
+            if reports
+            else "no candidate reaction was measured, so there is nothing to report on"
+        ),
+    )
+    writer.json(
+        "06_targets/summary.json",
+        _jsonable(result.targets_summary()),
+        stage="06_targets",
+        role="target_report_summary",
+    )
     # -- root ---------------------------------------------------------------
     writer.json(
         "00_config.json",

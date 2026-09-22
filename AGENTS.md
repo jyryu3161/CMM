@@ -101,7 +101,10 @@ vocabulary, CMM executes it and re-solves. **CMM enforces viability** — a move
 model infeasible or breaches the growth floor is reverted whatever the agent predicted — while
 **JEV chooses the strategy**. Its vocabulary is **down-regulation only**, gene deletion and
 50% knockdown, budgeted separately; it cannot amplify, and every run measures what that
-restriction cost. Its CMM solves are deterministic; its decisions are not, so a single run is
+restriction cost. A move names a reaction and is applied as the *gene edit* that achieves it,
+resolved through the GPR — so isozymes are all deleted together, a complex needs only one
+subunit, and a shared gene takes its other reactions with it, all before the viability rule
+judges the result. Its CMM solves are deterministic; its decisions are not, so a single run is
 never the method's performance. It needs `OPENROUTER_API_KEY`; nothing else in CMM does. See
 `docs/scenarios/SC-03-jev-agent-design.md`.
 

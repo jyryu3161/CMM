@@ -398,17 +398,26 @@ class JevClient:
                 raise JevTransportError(
                     f"OpenRouter {path} returned HTTP {exc.code}: {detail}"
                 ) from None
-            except urllib.error.URLError as exc:
-                # Includes timeouts and DNS/connection failures. ``reason`` is the useful
-                # part; the request object it came from would carry the Authorization header.
+            except OSError as exc:
+                # Every transient network failure, and the breadth is deliberate. Catching
+                # ``URLError`` alone looked right and was not: a *read* timeout after the
+                # connection is established raises ``TimeoutError``, which is not a
+                # ``URLError``, so it escaped the retry loop and killed a run mid-game on the
+                # second call. ``URLError`` and ``TimeoutError`` are both ``OSError``, as are
+                # connection resets, so the one clause covers them all. ``HTTPError`` is a
+                # ``URLError`` too and is handled above, before this.
+                #
+                # Only ``reason`` or ``str`` is reported: the request object these carry would
+                # print the Authorization header.
+                detail = getattr(exc, "reason", None) or f"{type(exc).__name__}: {exc}"
                 if attempt < self.max_retries:
                     last_error = JevTransportError(
-                        f"OpenRouter {path} was unreachable: {exc.reason}"
+                        f"OpenRouter {path} was unreachable: {detail}"
                     )
                     self._sleep_before_retry(attempt)
                     continue
                 raise JevTransportError(
-                    f"OpenRouter {path} was unreachable: {exc.reason}"
+                    f"OpenRouter {path} was unreachable: {detail}"
                 ) from None
 
         raise last_error or JevTransportError(f"OpenRouter {path} failed")

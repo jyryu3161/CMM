@@ -44,11 +44,15 @@ from qtpy.QtWidgets import (
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
-JEV_TAB_NAME = "JEV Agent"
+#: The tab's name. "Agent" rather than "JEV": the decision model behind it is JEV today and
+#: the provenance of every run records that, but the tab is the place where an agent plays
+#: this model and the name should not have to change when the model does.
+JEV_TAB_NAME = "Agent"
 
 #: How many options of each stage the deliberation panel shows. Enough to see the runner-up
 #: and the shape of the tail, short enough to read at a glance while the run is moving.
@@ -66,8 +70,9 @@ _OUTCOME_COLOUR = {
 }
 
 _NO_KEY_MESSAGE = (
-    "The JEV agent needs an OpenRouter API key. Add one from the JEV menu, or set "
-    "OPENROUTER_API_KEY in the environment. Every other tab works without one."
+    "The agent needs an OpenRouter API key. Use the “Set key…” button beside the run "
+    "button, or the Agent menu, or set OPENROUTER_API_KEY in the environment. Every other "
+    "tab works without one."
 )
 
 
@@ -94,7 +99,9 @@ class JevTabMixin:
         self._jev_stop_requested = False
         self._jev_running = False
 
-        controls = QGroupBox("JEV agent — a decision model plays this model")
+        controls = QGroupBox(
+            "Agent — a decision model plays this model, one move at a time"
+        )
         # Held so the whole control block can be disabled while a run is in flight.
         self.jev_controls = controls
         form = QFormLayout(controls)
@@ -169,6 +176,16 @@ class JevTabMixin:
         limits_row.addWidget(self.jev_growth_spin)
         limits_row.addWidget(QLabel("reactions on the board"))
         limits_row.addWidget(self.jev_board_spin)
+        self.jev_distinct_check = QCheckBox("each round must find a different design")
+        self.jev_distinct_check.setChecked(True)
+        self.jev_distinct_check.setToolTip(
+            "Withholds one reaction from each design already found, so a later round has to "
+            "reach somewhere else — the same integer cut OptKnock uses to enumerate "
+            "alternatives. Without it, six rounds produced two distinct designs and four "
+            "exact repeats: every round starts from the same wild type and plays the same "
+            "game. The best design is still whichever round found it."
+        )
+        limits_row.addWidget(self.jev_distinct_check)
         limits_row.addStretch(1)
         form.addRow("Rules:", limits_row)
 
@@ -187,26 +204,44 @@ class JevTabMixin:
         self.jev_brief.setMaximumHeight(78)
         form.addRow("Brief for the agent:", self.jev_brief)
 
+        # A real web search, through OpenRouter, run once per reaction the agent is about to
+        # act on: what has been published about editing it for this product, what it cost,
+        # and what side effects a flux model cannot predict. The answer is pasted into that
+        # reaction's record as data; it cannot widen the move vocabulary.
         web_row = QHBoxLayout()
-        self.jev_web_check = QCheckBox(
-            "Look up published evidence on the web (slower, about $0.05 a lookup)"
+        self.jev_web_check = QCheckBox("Look up published evidence on the web")
+        self.jev_web_check.setToolTip(
+            "Searches the web through OpenRouter for what has been published about editing "
+            "each reaction the agent is about to act on — what happened to the product, what "
+            "it cost in growth, and side effects a flux model cannot predict. About $0.05 a "
+            "lookup, eight lookups at most, and the answer is quoted into the board with its "
+            "sources."
         )
         self.jev_organism = QLineEdit()
-        self.jev_organism.setPlaceholderText("organism, e.g. Escherichia coli")
+        self.jev_organism.setPlaceholderText("Escherichia coli")
         self.jev_organism.setToolTip(
             "Required for the literature lookup. There is no default: asking the published "
             "record about the wrong species returns an answer that is confident and wrong."
         )
         self.jev_organism.setEnabled(False)
         self.jev_web_check.toggled.connect(self.jev_organism.setEnabled)
-        self.jev_web_check.toggled.connect(lambda _: self._update_jev_run_state())
+        self.jev_web_check.toggled.connect(self._on_jev_web_toggled)
         self.jev_organism.textChanged.connect(lambda _: self._update_jev_run_state())
         web_row.addWidget(self.jev_web_check)
+        web_row.addWidget(QLabel("organism:"))
         web_row.addWidget(self.jev_organism, 1)
-        form.addRow("", web_row)
+        form.addRow("Web research:", web_row)
+
+        # The reason the run button is refusing, where the button is, rather than in a
+        # tooltip nobody hovers over. A disabled button that does not say why reads as a bug.
+        self.jev_hint = QLabel("")
+        self.jev_hint.setWordWrap(True)
+        self.jev_hint.setStyleSheet("color: #a0342a; font-size: 11px;")
+        self.jev_hint.setVisible(False)
+        form.addRow("", self.jev_hint)
 
         run_row = QHBoxLayout()
-        self.jev_run_btn = QPushButton("Let JEV play")
+        self.jev_run_btn = QPushButton("Let the agent play")
         self.jev_run_btn.clicked.connect(self.run_jev_agent)
         # Stop lives outside the controls group, because the whole group is disabled while a
         # run is in flight and a stop button you cannot press is not a stop button.
@@ -217,8 +252,17 @@ class JevTabMixin:
             "summarised; only the baseline comparison is skipped."
         )
         self.jev_stop_btn.clicked.connect(self.stop_jev_agent)
+        # The credential lives in a menu, which is where nobody looked for it. It is also a
+        # prerequisite for this button working at all, so it belongs beside the button.
+        self.jev_key_btn = QPushButton("Set key…")
+        self.jev_key_btn.clicked.connect(self.set_jev_api_key)
+        self.jev_key_label = QLabel("")
+        self.jev_key_label.setStyleSheet("color: #5a6b7c; font-size: 11px;")
         run_row.addWidget(self.jev_run_btn)
         run_row.addWidget(self.jev_stop_btn)
+        run_row.addSpacing(16)
+        run_row.addWidget(self.jev_key_btn)
+        run_row.addWidget(self.jev_key_label)
         run_row.addStretch(1)
         form.addRow("", run_row)
         layout.addWidget(controls)
@@ -270,9 +314,10 @@ class JevTabMixin:
         layout.addLayout(bars)
 
         self.jev_summary = QLabel(
-            "JEV is a decision model: it is shown the metabolic state and picks one move at "
-            "a time from a fixed set. CMM executes each move, re-solves, and redraws the "
-            "flux map — so you watch the design happen."
+            "The agent is shown the metabolic state and picks one move at a time from a fixed "
+            "set \u2014 delete a gene, weaken it to half, or run an analysis first. CMM "
+            "executes each move, re-solves, and redraws the flux map, so you watch the "
+            "design happen."
         )
         self.jev_summary.setWordWrap(True)
         self.jev_summary.setAlignment(Qt.AlignTop)
@@ -332,7 +377,7 @@ class JevTabMixin:
         # ranking of the board — showing it turns "the agent picked ICL" into "it picked ICL
         # over FUM by 0.40 to 0.16", which is the difference between an assertion and
         # evidence, and is often where the interesting runner-up is.
-        self.jev_thinking = QLabel("JEV has not been asked anything yet.")
+        self.jev_thinking = QLabel("The agent has not been asked anything yet.")
         self.jev_thinking.setWordWrap(True)
         self.jev_thinking.setObjectName("jevthinking")
         self.jev_thinking.setAlignment(Qt.AlignTop)
@@ -355,10 +400,36 @@ class JevTabMixin:
         panel_layout.addWidget(self.jev_thinking)
         panel_layout.addWidget(self.jev_weights, 1)
 
+        # The move log and the target report answer different questions — "what did it do?"
+        # and "what did it learn?" — and a reader wants the second one after the run, not
+        # while it is playing. Tabs rather than a third pane: the map needs the width.
+        self.jev_targets = QTableWidget(0, 5)
+        self.jev_targets.setHorizontalHeaderLabels(
+            ["Target", "Edit", "Best gain", "For", "Against"]
+        )
+        target_header = self.jev_targets.horizontalHeader()
+        for column, mode in enumerate(
+            (
+                QHeaderView.ResizeToContents,
+                QHeaderView.ResizeToContents,
+                QHeaderView.ResizeToContents,
+                QHeaderView.Stretch,
+                QHeaderView.Stretch,
+            )
+        ):
+            target_header.setSectionResizeMode(column, mode)
+        self.jev_targets.verticalHeader().setVisible(False)
+        self.jev_targets.setAlternatingRowColors(True)
+        self.jev_targets.setWordWrap(True)
+
+        self.jev_lower_tabs = QTabWidget()
+        self.jev_lower_tabs.addTab(self.jev_table, "Moves")
+        self.jev_lower_tabs.addTab(self.jev_targets, "Targets: for and against")
+
         right = QSplitter(Qt.Vertical)
         right.addWidget(panel)
-        right.addWidget(self.jev_table)
-        right.setSizes([260, 200])
+        right.addWidget(self.jev_lower_tabs)
+        right.setSizes([260, 240])
         right.setMinimumWidth(500)
         results.addWidget(right)
         results.setStretchFactor(0, 3)
@@ -394,43 +465,91 @@ class JevTabMixin:
         has_key = credentials.key_source() != "none"
         self._jev_has_key = has_key
         self._jev_has_exchanges = bool(exchanges)
+        self._refresh_jev_key_label()
         self._update_jev_run_state()
         if not exchanges:
             self.jev_summary.setText(
                 "This model has no exchange reactions, so there is no product flux to raise."
             )
-            self.jev_run_btn.setToolTip("The model has no exchange reactions.")
         elif not has_key:
             self.jev_summary.setText(_NO_KEY_MESSAGE)
-            self.jev_run_btn.setToolTip(_NO_KEY_MESSAGE)
-        else:
-            self.jev_run_btn.setToolTip("")
 
         self.jev_table.setRowCount(0)
+        self.jev_targets.setRowCount(0)
         self._jev_frames = []
         self._jev_result = None
         self._jev_cost = 0.0
         self.jev_cost.setText("$0.0000")
 
+    def _on_jev_web_toggled(self, checked: bool) -> None:
+        """Turning the lookup on puts the cursor where the one missing thing goes."""
+
+        if checked and not self.jev_organism.text().strip():
+            self.jev_organism.setFocus()
+        self._update_jev_run_state()
+
     def _update_jev_run_state(self) -> None:
-        """Enable the run only when everything it needs is present, and say what is missing."""
+        """Enable the run only when everything it needs is present, and say what is missing.
+
+        The saying is the part that was wrong. The requirement was real — a literature lookup
+        aimed at the wrong species returns an answer that is confident and wrong — but it
+        lived in a tooltip, so ticking the web-research box greyed the run button out with no
+        visible reason, which reads as a broken button rather than as a question.
+        """
 
         if not hasattr(self, "jev_run_btn"):
             return
         needs_organism = (
             self.jev_web_check.isChecked() and not self.jev_organism.text().strip()
         )
-        ready = (
-            getattr(self, "_jev_has_exchanges", False)
-            and getattr(self, "_jev_has_key", False)
-            and not needs_organism
-        )
+        has_key = getattr(self, "_jev_has_key", False)
+        has_exchanges = getattr(self, "_jev_has_exchanges", False)
+        ready = has_exchanges and has_key and not needs_organism
         self.jev_run_btn.setEnabled(ready)
-        if needs_organism and ready is False and getattr(self, "_jev_has_key", False):
-            self.jev_run_btn.setToolTip(
-                "Name the organism: a literature lookup about the wrong species returns an "
-                "answer that is confident and wrong."
+
+        if not has_exchanges:
+            hint = (
+                "This model has no exchange reactions, so there is no product to raise."
             )
+        elif not has_key:
+            hint = (
+                "No OpenRouter API key. Press “Set key…” \u2014 it is the only credential "
+                "CMM uses, and only this tab needs it."
+            )
+        elif needs_organism:
+            hint = (
+                "Name the organism for the web lookup, for example “Escherichia coli”. "
+                "There is no default on purpose: the published record answered about the "
+                "wrong species is confident and wrong. Untick the box to run without it."
+            )
+        else:
+            hint = ""
+        if hasattr(self, "jev_hint"):
+            self.jev_hint.setText(hint)
+            self.jev_hint.setVisible(bool(hint))
+        self.jev_run_btn.setToolTip(hint)
+        self.jev_organism.setStyleSheet(
+            "border: 1px solid #a0342a;" if needs_organism else ""
+        )
+
+    def _refresh_jev_key_label(self) -> None:
+        """Say where the key in force came from, beside the button that sets it."""
+
+        from cmm.jev import credentials
+
+        if not hasattr(self, "jev_key_label"):
+            return
+        source = credentials.key_source()
+        if source == "environment":
+            import os
+
+            text = f"key: {credentials.ENV_VAR} ({credentials.masked(os.environ[credentials.ENV_VAR])})"
+        elif source == "saved":
+            text = f"key: saved ({credentials.masked(credentials.stored_key())})"
+        else:
+            text = "no key set"
+        self.jev_key_label.setText(text)
+        self.jev_key_btn.setText("Change key…" if source != "none" else "Set key…")
 
     # -- the credential -----------------------------------------------------
 
@@ -447,7 +566,7 @@ class JevTabMixin:
         key, accepted = QInputDialog.getText(
             self,
             "OpenRouter API key",
-            "The JEV agent is the only part of CMM that needs a key.\n\n"
+            "The agent is the only part of CMM that needs a key.\n\n"
             f"It will be saved in plain text at:\n{location}\n"
             "readable only by you, and removable from this menu at any time.\n"
             f"Setting {credentials.ENV_VAR} in the environment overrides it.\n\n"
@@ -472,7 +591,7 @@ class JevTabMixin:
         QMessageBox.information(
             self,
             "OpenRouter API key",
-            f"Saved to {saved}.\nThe JEV Agent tab is ready.",
+            f"Saved to {saved}.\nThe Agent tab is ready.",
         )
 
     def clear_jev_api_key(self) -> None:
@@ -517,9 +636,9 @@ class JevTabMixin:
             )
         else:
             text = (
-                "No key is set. The JEV Agent tab is disabled until one is.\n\n"
+                "No key is set. The Agent tab is disabled until one is.\n\n"
                 f"Either set {credentials.ENV_VAR} in the environment, or use "
-                "JEV \u25b8 Set API Key."
+                "Agent \u25b8 Set OpenRouter API Key."
             )
         QMessageBox.information(self, "OpenRouter API key", text)
 
@@ -549,8 +668,8 @@ class JevTabMixin:
             f"step 0 of up to {self.jev_ticks_spin.value()} this round"
         )
         self.jev_weights.setRowCount(0)
-        self.jev_thinking.setText("Asking JEV for its first move\u2026")
-        self.jev_summary.setText(f"JEV is playing for {html.escape(product)}…")
+        self.jev_thinking.setText("Asking the agent for its first move\u2026")
+        self.jev_summary.setText(f"The agent is playing for {html.escape(product)}…")
 
         # Serialize on the UI thread: the worker must not touch this model's solver object.
         from cobra.io import write_sbml_model
@@ -569,6 +688,7 @@ class JevTabMixin:
             max_knockdowns=self.jev_knockdowns_spin.value(),
             growth_floor=self.jev_growth_spin.value(),
             candidate_limit=self.jev_board_spin.value(),
+            require_distinct_rounds=self.jev_distinct_check.isChecked(),
             enable_web_research=self.jev_web_check.isChecked(),
             organism=self.jev_organism.text().strip(),
         )
@@ -587,12 +707,13 @@ class JevTabMixin:
         try:
             result = self._run_jev_visibly(_compute)
         except Exception as exc:
-            self.jev_summary.setText(f"The JEV run failed: {html.escape(str(exc))}")
-            self.status_label.setText("JEV run failed.")
+            self.jev_summary.setText(f"The agent run failed: {html.escape(str(exc))}")
+            self.status_label.setText("Agent run failed.")
             return
 
         self._jev_result = result
         self._show_jev_summary(result)
+        self._fill_jev_targets(result)
 
     def stop_jev_agent(self) -> None:
         """Ask the running game to stop after the step it is on.
@@ -607,7 +728,7 @@ class JevTabMixin:
             self.jev_stop_btn.setEnabled(False)
             self.jev_stop_btn.setText("Stopping…")
             self.jev_progress.setFormat("stopping after this step…")
-            self.status_label.setText("Stopping the JEV run after the current step.")
+            self.status_label.setText("Stopping the agent run after the current step.")
 
     def _run_jev_visibly(self, compute):
         """Run ``compute`` off the UI thread with the window left visible.
@@ -907,6 +1028,43 @@ class JevTabMixin:
         )
         self.jev_map_caption.setText(f"{self._flux_change(fluxes, previous)}  {what}")
 
+    def _fill_jev_targets(self, result) -> None:
+        """Every target the run weighed, with the case for and against editing it.
+
+        Not scored against each other on purpose. "Raises the product by 0.035" and "needs
+        three isozymes deleted" are not the same kind of quantity, and collapsing them into a
+        rank would hide the trade from the only person who can make it.
+        """
+
+        reports = result.targets()
+        self.jev_targets.setRowCount(len(reports))
+        for row, report in enumerate(reports):
+            gains = [
+                g
+                for g in (report.deletion_gain, report.knockdown_gain)
+                if g is not None
+            ]
+            best = f"{max(gains):+.4g}" if gains else "not measured"
+            values = [
+                report.reaction_id,
+                ", ".join(report.genes) or "—",
+                best,
+                "\n".join(f"+ {line}" for line in report.pros) or "—",
+                "\n".join(f"\u2212 {line}" for line in report.cons) or "—",
+            ]
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                item.setTextAlignment(Qt.AlignLeft | Qt.AlignTop)
+                if report.in_best_design:
+                    item.setBackground(QColor("#dce9d6"))
+                self.jev_targets.setItem(row, column, item)
+        self.jev_targets.resizeRowsToContents()
+        if reports:
+            self.jev_lower_tabs.setTabText(
+                1, f"Targets: for and against ({len(reports)})"
+            )
+
     def _show_jev_summary(self, result) -> None:
         summary = result.summary()
         product = html.escape(str(summary["product"]))
@@ -937,6 +1095,38 @@ class JevTabMixin:
             "".join(f"<li>{html.escape(line)}</li>" for line in summary["best_design"])
             or "<li>no interventions survived the rules</li>"
         )
+        # What each round left undone, which is the half of a round's result that tells the
+        # next one what to do. A run that only reports its best score hides its own agenda.
+        rounds = "".join(
+            (
+                "<li><b>round {index}</b> — {question}: "
+                "<b>{product:.4g}</b> at growth {growth:.4g}. {stopped}{gap}</li>"
+            ).format(
+                index=record.round_index,
+                question=html.escape(
+                    "best design available"
+                    if not record.withheld
+                    else "best design without " + ", ".join(record.withheld)
+                ),
+                product=record.product_flux,
+                growth=record.growth,
+                stopped=html.escape(record.stopped_because or "ended"),
+                gap=(
+                    "; left undone: " + html.escape("; ".join(record.shortfall))
+                    if record.shortfall
+                    else ""
+                ),
+            )
+            for record in result.rounds
+        )
+        distinct = len({record.signature for record in result.rounds})
+        round_block = (
+            f"<br>Rounds — {distinct} distinct design"
+            f"{'' if distinct == 1 else 's'} over {len(result.rounds)}:<ul>{rounds}</ul>"
+            if rounds
+            else ""
+        )
+
         notes = "".join(
             f"<li>{html.escape(str(note))}</li>" for note in summary["notes"]
         )
@@ -946,7 +1136,7 @@ class JevTabMixin:
             f"{headline}<br>Design:<ul>{design}</ul>"
             f"{summary['n_ticks']} moves over {summary['n_rounds']} rounds; "
             f"{usage['calls']} agent decisions costing ${usage['cost_usd']:.4f}."
-            f"{note_block}"
+            f"{round_block}{note_block}"
             "<br><i>This is a computational hypothesis. The agent's choices are not "
             "guaranteed to repeat on a re-run; the CMM solves behind them are.</i>"
         )
@@ -954,7 +1144,7 @@ class JevTabMixin:
             f"${usage['cost_usd']:.4f}  \u00b7  {usage['calls']} decisions"
         )
         self.status_label.setText(
-            f"JEV run complete: {summary['n_ticks']} moves, best {product} "
+            f"Agent run complete: {summary['n_ticks']} moves, best {product} "
             f"{best:.4g} mmol gDW-1 h-1, ${usage['cost_usd']:.4f} spent."
         )
 
