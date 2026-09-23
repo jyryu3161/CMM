@@ -50,7 +50,7 @@ then be comparing everything against instead of the organism.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 import json
 import math
 from pathlib import Path
@@ -1325,13 +1325,14 @@ def run_jev_design(
                 stop_run = True
                 stopped_by_user = True
                 break
-            if tick.outcome in _DESIGN_CHANGING_OUTCOMES:
-                worst, best_case = _measure_guarantee(board, config)
-                if worst is None and config.measure_guaranteed_product:
-                    guarantee_fell_back = True
-                tick = replace(
-                    tick, guaranteed_product=worst, guaranteed_best=best_case
-                )
+            # The tick measured its own guarantee when it changed the design, so the verdict
+            # the agent reads and the number the run ranks on are one measurement, not two.
+            if (
+                tick.outcome in _DESIGN_CHANGING_OUTCOMES
+                and tick.guaranteed_product is None
+                and config.measure_guaranteed_product
+            ):
+                guarantee_fell_back = True
             ticks.append(tick)
             board.history.append(tick.headline())
 
@@ -1735,6 +1736,7 @@ def _play_tick(
         status: str = "optimal",
         product_flux: float = float("nan"),
         growth: float = float("nan"),
+        guaranteed: tuple[float | None, float | None] = (None, None),
     ) -> TickRecord:
         return TickRecord(
             round_index=round_index,
@@ -1756,6 +1758,8 @@ def _play_tick(
             moma_product_flux=moma[0],
             moma_growth=moma[1],
             moma_distance=moma[2],
+            guaranteed_product=guaranteed[0],
+            guaranteed_best=guaranteed[1],
             n_active_interventions=len(board.interventions),
             decision_cost_usd=cost,
             decision_latency_s=latency,
@@ -1785,6 +1789,7 @@ def _play_tick(
         board.restore(board.best_snapshot)
         solution = _solve(board.model)
         return frame(
+            guaranteed=_measure_guarantee(board, config),
             action=RESTORE_ACTION.name,
             outcome="applied"
             if solution.status == "optimal"
@@ -1802,6 +1807,7 @@ def _play_tick(
         removed = board.undo()
         board.clear_failures()
         return frame(
+            guaranteed=_measure_guarantee(board, config),
             action=UNDO_ACTION.name,
             outcome="undone_by_agent",
             reason=(removed.describe() if removed else "there was nothing to undo"),
@@ -1998,6 +2004,7 @@ def _play_tick(
         )
 
     moma = _moma_snapshot(board, config, use_linear_moma)
+    guaranteed = _measure_guarantee(board, config)
     delta = new_product - state.product_flux
     board.contribution[intervention.reaction_id] = delta
     if delta > 1e-9:
@@ -2009,6 +2016,29 @@ def _play_tick(
             "product unchanged: this edit costs a place in the design and has bought "
             "nothing so far"
         )
+    # Said in the quantity the run actually scores, because the two can disagree completely
+    # and the agent reads this line on every later step. Measured on iJO1366 D-lactate: an
+    # agent told "product rose by +17.2" on a design whose guarantee never left zero ended
+    # every one of its six rounds satisfied, and the run promoted nothing. The pFBA number is
+    # the best case; a design that guarantees nothing is one the strain may grow just as fast
+    # without ever using.
+    worst = guaranteed[0]
+    if worst is not None:
+        before = state.guaranteed[0] if state.guaranteed else None
+        if abs(worst) <= 1e-9:
+            verdict += (
+                "; but the GUARANTEE is still 0 — the strain can make this much and need "
+                "not make any of it, so this design is not yet a design"
+            )
+        elif before is not None:
+            step = worst - float(before)
+            verdict += (
+                f"; the guarantee, which is what a design is scored on, "
+                f"{'rose' if step > 1e-9 else ('FELL' if step < -1e-9 else 'did not move')}"
+                f" to {worst:.4g}"
+            )
+        else:
+            verdict += f"; guaranteed {worst:.4g}"
     # The move stuck, so the design that every earlier rejection was measured against is
     # gone, and with it the grounds for the rejection.
     board.clear_failures()
@@ -2021,6 +2051,7 @@ def _play_tick(
         risk=risk,
         action_confidence=action_confidence,
         moma=moma,
+        guaranteed=guaranteed,
         product_flux=new_product,
         growth=new_growth,
     )
@@ -2174,6 +2205,7 @@ def _adopt_design(
         ),
         intervention=applied[-1] if applied else None,
         moma=_moma_snapshot(board, config, use_linear_moma),
+        guaranteed=_measure_guarantee(board, config),
         product_flux=new_product,
         growth=new_growth,
     )

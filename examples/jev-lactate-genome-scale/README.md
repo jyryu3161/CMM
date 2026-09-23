@@ -83,6 +83,33 @@ The `brief` in the config states the plateau to the agent in words, because that
 person who had run the screen would tell it. It is guidance, not permission: it cannot widen
 the vocabulary or lift the growth floor.
 
+## What happened when it was run
+
+Live, `typesafe/jev-1.13-20260917`, six rounds, 26 steps, 43 calls, $0.027, about three
+minutes:
+
+| method | guaranteed D-lactate | cost |
+|---|---:|---|
+| OptKnock, 3 knockouts | **0.0000** | 2773 s |
+| **JEV agent**, 6 rounds | **0.0000** | 43 calls, $0.027 |
+| greedy over the same vocabulary | 0.0000 — stops on the plateau | seconds |
+| **exhaustive pair sweep** | **17.5858** (`ALCD2x`✗ + `ATPS4rpp`✗) | ~350 s per anchor |
+
+**The agent did not cross the plateau.** It reached pFBA 17.6 repeatedly — `PFL`✗ then
+`GLCptspp`✗ — and every one of those designs guarantees zero, so none was ever promoted and
+the run ends with `best_design: []`. It never reached `ALCD2x` + `ATPS4rpp`.
+
+So on this problem every method that reasons fails and only brute force succeeds. That is a
+result, not a failed run, and it is the first problem here sharp enough to produce one.
+
+One thing the run changed about CMM. On the first attempt the agent was told *"product rose by
++17.2"* after each move, because the verdict quoted the pFBA product while the run ranks on the
+guarantee — a design climbing impressively on a number nobody was scoring. It ended all six
+rounds satisfied. The verdict now states the scored quantity, and on the same problem the agent
+visibly changes behaviour: it starts *withdrawing* moves it had applied, which it never did when
+the feedback flattered it. It still does not find the pair, but it is now failing against an
+honest signal.
+
 ## What to read afterwards
 
 - `00_summary.json` — `best_guaranteed_product` is the number that matters. Anything above

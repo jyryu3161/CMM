@@ -198,8 +198,17 @@ def test_an_unknown_answer_type_is_reported_not_guessed() -> None:
         )
 
 
-def test_a_missing_api_key_names_the_variable_to_set(monkeypatch) -> None:
+def test_a_missing_api_key_names_the_variable_to_set(monkeypatch, tmp_path) -> None:
+    """Both sources have to be absent, and the saved one lives outside the repository.
+
+    Deleting the environment variable is not enough: ``resolve_api_key`` falls back to the key
+    the desktop app saves under ``$XDG_CONFIG_HOME``, so on a machine where anyone had ever
+    saved one this test passed for the wrong reason and failed the moment a key appeared. The
+    config home is redirected at a temporary directory so the test states its own world.
+    """
+
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     with pytest.raises(JevTransportError, match="OPENROUTER_API_KEY"):
         JevClient()
 

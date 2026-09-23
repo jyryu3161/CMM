@@ -55,11 +55,17 @@ def test_the_tab_exists_and_sits_last(window) -> None:
 
 
 def test_without_an_api_key_the_tab_explains_itself_and_nothing_else_breaks(
-    window, monkeypatch
+    window, monkeypatch, tmp_path
 ) -> None:
-    """The whole feature degrades to one disabled button and a sentence."""
+    """The whole feature degrades to one disabled button and a sentence.
+
+    Both sources of a key have to be absent. Deleting the environment variable leaves the one
+    the tab itself saves under ``$XDG_CONFIG_HOME``, so on a machine where anyone had ever used
+    the Set API key menu this passed for the wrong reason and failed the moment a key appeared.
+    """
 
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     window._refresh_jev_inputs()
 
     assert not window.jev_run_btn.isEnabled()

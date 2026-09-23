@@ -563,6 +563,13 @@ is an ordinary CMM solve. What is validated is the loop, not the agent:
   `TKT2`) is proven for 9.275 on reactions and drops growth to zero as genes. The row walks down
   the ranking to the best design that still clears the growth floor once resolved, and says how
   many it skipped, so no row credits a designer with a strain nobody can build.
+- **A move's verdict is stated in the quantity the run scores.** The line the agent reads after
+  each move used to quote the change in the pFBA product while the run ranked designs on the
+  guarantee, and the two can disagree completely. Measured on `iJO1366` D-lactate: an agent told
+  "product rose by +17.2" on a design whose guarantee never left zero ended every one of its six
+  rounds satisfied, and the run promoted nothing. The verdict now names the guarantee, says
+  plainly when it is still zero — *"the strain can make this much and need not make any of it"* —
+  and the same measurement is what both the agent and the scoreboard use, taken once.
 - **What each move was chosen over is on the record and in the report.** Every answer carries a
   probability for every criterion the caller offered, so the runner-up and the margin are known.
   `02_game/ticks.csv` carries `runner_up`, `runner_up_confidence` and `decided_by`, and
