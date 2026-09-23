@@ -80,7 +80,7 @@ applied and solved the same way, and prints the table:
                                            guaranteed  9.9457  growth  0.0547
   best amplification (outside the vocabulary)
                                            guaranteed 10.0310  growth  0.0532
-  JEV agent                                guaranteed  9.9457  growth  0.0547  (not deterministic)
+  JEV agent                                guaranteed  9.9487  growth  0.0517  (not deterministic)
 ```
 
 Every row is the **guaranteed** product: the least that design can make while growing as fast
@@ -106,13 +106,17 @@ difference shows: OptKnock's design is free to make anything from 7.70 to 11.55,
 agent's is pinned at 9.946. The knockdown does not raise what the strain can make; it removes
 the strain's freedom to make less.
 
-*And enumeration finds the same thing.* The `+ one knockdown (exhaustive)` row is the same
-proven design plus the best of every `knockdown_50` the agent could have played, tried one at a
-time: 32 moves, under a second, no judgement anywhere in it. It lands on `ACKr` at 9.9457 —
-exactly where the agent landed. Going deeper changes nothing: all 496 pairs return the same
-9.9457, so a second knockdown buys nothing on this problem for anyone. The agent found the
-optimum of its own vocabulary, and so did a one-second loop. Any claim that the decision model
-contributes something has to clear that row, not OptKnock — which is why every run computes it.
+*And enumeration gets close, but no longer all the way.* The `+ one knockdown (exhaustive)` row
+is the same proven design plus the best of every `knockdown_50` the agent could have played,
+tried one at a time: 32 moves, under a second, no judgement anywhere in it. It lands on `ACKr`
+at **9.9457**, and going deeper does not help it — all 496 pairs return the same 9.9457, so a
+second knockdown buys nothing for a search working from that design.
+
+The agent reaches **9.9487**, in 10 runs of 10, by adding a fifth edit the sweep never considers:
+deleting `GLUDy`, a reaction the cofactor slate puts on the board and the carbon-graph slates
+cannot. The margin is small — 0.03% — and it is a margin over the control rather than over
+OptKnock, which is the comparison that means something. Any claim that the decision model
+contributes has to clear that row, not OptKnock, which is why every run computes it.
 
 The `best amplification` row is deliberately a move the agent may **not** make. Forcing flux
 through a reaction is not what over-expression does to a cell, so it is excluded from the
@@ -160,8 +164,8 @@ results/example-jev-succinate/
 
 **The agent's choices are not guaranteed to repeat, so the run was repeated.** The CMM solves
 behind them are deterministic; the decisions are not. On this exact config the outcome turns
-out to be anyway — ten runs, the same four-edit design and the same 9.945652 every time, with
-only the path varying. That is measured, not assumed, and it holds for *this* configuration: on
+out to be anyway — ten runs, the same five-edit design and the same 9.948666 every time, with
+only the path varying (40 to 44 steps, $0.0144 to $0.0157). That is measured, not assumed, and it holds for *this* configuration: on
 the genome-scale D-lactate example the same harness returns no design in 10 of 10.
 
 The transcript is what makes a single run auditable; it is not what makes the method

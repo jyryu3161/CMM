@@ -85,30 +85,45 @@ the vocabulary or lift the growth floor.
 
 ## What happened when it was run
 
-Live, `typesafe/jev-1.13-20260917`, six rounds, 26 steps, 43 calls, $0.027, about three
-minutes:
+It was run twice over, because the first attempt found a defect in CMM rather than a design.
 
-| method | guaranteed D-lactate | cost |
-|---|---:|---|
-| OptKnock, 3 knockouts | **0.0000** | 2773 s |
-| **JEV agent**, 6 rounds | **0.0000** | 43 calls, $0.027 |
-| greedy over the same vocabulary | 0.0000 — stops on the plateau | seconds |
-| **exhaustive pair sweep** | **17.5858** (`ALCD2x`✗ + `ATPS4rpp`✗) | ~350 s per anchor |
+**First attempt — the agent returned nothing, ten times out of ten.** `best_design: []`, and
+every replicate took the identical path: `PFL`✗ then `GLCptspp`✗, first move 10/10 the same,
+nine distinct reactions touched across all ten runs out of 2123. Two causes, both now fixed:
 
-**The agent did not cross the plateau.** It reached pFBA 17.6 repeatedly — `PFL`✗ then
-`GLCptspp`✗ — and every one of those designs guarantees zero, so none was ever promoted and
-the run ends with `best_design: []`. It never reached `ALCD2x` + `ATPS4rpp`.
+1. *It was told the wrong number.* The verdict after each move quoted the change in the pFBA
+   product — "product rose by +17.2" — while the run ranks designs on the guarantee, which never
+   left zero. It ended all six rounds satisfied. The verdict now states the scored quantity.
+2. *The moves it needed were never on the board.* `ALCD2x` and `ATPS4rpp` — the only pair that
+   guarantees any D-lactate — were **never offered once in ten runs**. The board's slates are
+   built on the carbon graph and on flux magnitude; `ATPS4rpp` is ATP synthase and has no path
+   to the product at all, so no board size could reach it. Meanwhile the run's own
+   `cofactor_limitation` was reporting ATP as limiting by +3.0 on every tick. There is a
+   cofactor slate now, and this example sets `candidate_limit: 32`.
 
-So on this problem every method that reasons fails and only brute force succeeds. That is a
-result, not a failed run, and it is the first problem here sharp enough to produce one.
+**Second attempt — it beats everything deterministic here.** Two runs so far:
 
-One thing the run changed about CMM. On the first attempt the agent was told *"product rose by
-+17.2"* after each move, because the verdict quoted the pFBA product while the run ranks on the
-guarantee — a design climbing impressively on a number nobody was scoring. It ended all six
-rounds satisfied. The verdict now states the scored quantity, and on the same problem the agent
-visibly changes behaviour: it starts *withdrawing* moves it had applied, which it never did when
-the feedback flattered it. It still does not find the pair, but it is now failing against an
-honest signal.
+| method | guaranteed D-lactate | edits | growth | cost |
+|---|---:|---:|---:|---|
+| OptKnock, 3 knockouts | 0.0000 | 3 | 0.050 | 2773 s |
+| exhaustive **pair** sweep | 17.5858 | 2 | 0.1625 | ~350 s per anchor |
+| **agent, run 1** | **17.9200** | 8 | 0.1340 | 56 steps, $0.075, 588 s |
+| **agent, run 2** | **19.1199** | 6 | 0.0592 | 86 steps, $0.111, 4.8 h |
+
+Read at one growth rate the gap is not a trade: held at run 1's 0.1340 the agent's design
+guarantees 17.93 against the pair's 7.72; held at run 2's 0.0592 it guarantees 19.12 against
+the pair's 0.0000. Both designs were re-scored independently of the run that produced them.
+
+Neither is the pair. Run 2's design is `ACALD`, `GLUDy`, `GLCptspp`, `ATPS4rpp`, `ALCD2x`,
+`PPK` — and half of those are reactions only the cofactor slate can put on a board.
+
+**What this is evidence of, and what it is not.** The exhaustive search that found 17.5858 was
+over *pairs*, because pairs are where exhaustive search stops being affordable — 496 of them on
+the reduced board here, 3.2 million over the whole model. A six- or eight-edit design was never
+in its space. So this is not "the agent beat exhaustive search"; it is **the agent returning a
+better design at a depth exhaustive search cannot reach**, which is the only place judgement
+could have paid. It is also **n = 2**. The ten-run study was stopped after two because run 2
+alone took 4.8 hours; see *What it costs*.
 
 ## What to read afterwards
 
@@ -137,8 +152,18 @@ on succinate, but here it would cost 1417 s before the first move and would hand
 deterministic answer on the very problem meant to test whether it can find one itself.
 
 `run_baseline_comparison` is on and is the slow part of the tail: OptKnock and RobustKnock at
-~1400 s each, plus a MOMA-L2 screen over 1367 genes. Expect the comparison to take longer than
-the game. Set it to `false` for a first look.
+~1400 s each on succinate and 2773 s on D-lactate, plus a MOMA-L2 screen over 1367 genes. Expect
+the comparison to take longer than the game. Set it to `false` for a first look — the two runs
+reported above did.
+
+**And the game itself is slow here, unevenly.** Measured with baselines off: run 1 took 588 s
+over 56 steps, run 2 took **17272 s — 4.8 hours — over 86 steps**. Per-step cost grows with the
+design, because `screen_interventions` re-measures the whole board every time the design changes
+(2 solves × 32 candidates), and the guarantee, the cofactor marginals and MOMA are each paid per
+tick on a 2583-reaction model. A run that keeps finding improvements keeps playing, so the runs
+that work are the expensive ones. Budget hours, not minutes, and set `screen_interventions:
+false` or a smaller `steps_per_round` if that is not affordable — both change what the agent
+sees, so say which you used.
 
 ## The key
 
@@ -154,14 +179,10 @@ The file is plain text at `0600`; `cmm.jev.credentials.clear_key()` removes it.
 
 ## What a run here does not establish
 
-Everything SC-03 says still applies, and one thing more. Crossing the plateau once would be
-evidence about that run, not about the method — so the run was repeated. Ten runs of this exact
-configuration through `evals/jev_replicates.py` returned **no design in 10 of 10**, varying only
-in path (20 to 26 steps, $0.021 to $0.028, $0.245 in total). The failure is as reproducible as
-the succinate example's success, which is 10 of 10 the other way.
-
-Ten runs of one configuration is not a statement about the method, and a build that changed the
-board, the budget or the brief would have to be measured again:
+Everything SC-03 says still applies, and one thing more. The ten-run study quoted above is of
+the **old** board: 0 of 10, 20 to 26 steps, $0.245 in total. On the fixed board only two runs
+have been made, both successful but one of them 4.8 hours long, so there is no distribution here
+yet — two successes are not a success rate. Repeat it before quoting it:
 
 ```bash
 uv run --frozen --all-extras python evals/jev_replicates.py \

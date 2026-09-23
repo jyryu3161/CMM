@@ -7,8 +7,16 @@
   "condition": {
     "name": "glucose_anaerobic",
     "bounds": [
-      {"reaction_id": "EX_glc__D_e", "lower_bound": -10.0, "upper_bound": 1000.0},
-      {"reaction_id": "EX_o2_e", "lower_bound": 0.0, "upper_bound": 1000.0}
+      {
+        "reaction_id": "EX_glc__D_e",
+        "lower_bound": -10.0,
+        "upper_bound": 1000.0
+      },
+      {
+        "reaction_id": "EX_o2_e",
+        "lower_bound": 0.0,
+        "upper_bound": 1000.0
+      }
     ],
     "notes": "Glucose uptake 10 mmol gDW^-1 h^-1, oxygen closed. Same condition as the e_coli_core examples, so the two scales are comparable."
   },
@@ -18,7 +26,7 @@
   "max_knockouts": 6,
   "max_knockdowns": 3,
   "growth_floor": 0.05,
-  "candidate_limit": 24,
+  "candidate_limit": 32,
   "allow_look_actions": true,
   "run_moma": true,
   "measure_cofactor_limits": true,

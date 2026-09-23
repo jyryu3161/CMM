@@ -586,12 +586,14 @@ the agent's 9.946.
 
 **The agent very nearly found the optimum of the space it was given, and so does enumeration.**
 There are 32 knockdowns the agent could play on the OptKnock set. Tried one at a time they
-reach **9.9457** through `ACKr` (and the equivalent `PTAr`), which is exactly what the agent
-found. Tried in all 496 pairs they reach 9.9457 as well: a second knockdown buys **nothing at
-all**, to six decimal places. Two readings follow and both belong in any claim made from this
-run: the loop found the optimum of its own vocabulary, which is worth knowing; and that space
-is small enough to exhaust in under a second, so on this problem the search did not need a
-decision model. `05_baseline/comparison.csv` carries that sweep as its own row in every run,
+reach **9.9457** through `ACKr` (and the equivalent `PTAr`). Tried in all 496 pairs they reach
+9.9457 as well: a second knockdown buys **nothing at all** for a search working from that
+design, to six decimal places.
+
+The agent reaches **9.9487** in 10 runs of 10, by adding a fifth edit that sweep cannot see —
+deleting `GLUDy`, which reaches succinate through the redox balance rather than through a carbon
+path and is on the board only because of the cofactor slate. The margin is 0.03%, which is small
+and is a margin over the *control* rather than over OptKnock. `05_baseline/comparison.csv` carries that sweep as its own row in every run,
 which is why the claim can be checked rather than argued.
 
 Four things made the difference, and each was a failure before it was a fix:
@@ -616,8 +618,9 @@ is not evidence that it will on yours. Run the comparison; it is on by default.
 - **It is not reproducible in the agent's choices, and the spread is measured.** The CMM solves
   are deterministic; JEV's answers are not guaranteed to repeat. Ten runs each of two
   configurations, through `evals/jev_replicates.py`: succinate on `e_coli_core` reached
-  9.945652 — the exhaustive sweep's answer — in **10 of 10**, one distinct design, 34 to 48
-  steps; D-lactate on `iJO1366` returned **no design in 10 of 10**. Both outcomes are
+  9.948666 in **10 of 10**, one distinct design, 40 to 44 steps; D-lactate on `iJO1366` on the
+  board as it was before the cofactor slate returned **no design in 10 of 10**, and on the fixed
+  board reached 17.9200 and 19.1199 in the only two runs made, which is not a distribution. Both outcomes are
   degenerate and opposite, so what varies between runs is the path and not the conclusion. An
   earlier build, before designs were ranked on the guarantee and before the designer seeded the
   board, did produce designs differing several-fold on the first of those; that is no longer

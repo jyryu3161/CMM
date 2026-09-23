@@ -524,6 +524,16 @@ is an ordinary CMM solve. What is validated is the loop, not the agent:
   isozymes, complexes and shared genes enter every row identically. The single-gene row is
   chosen on the MOMA-L2 screen and re-scored under pFBA like everything else, rather than
   reporting a minimal-adjustment product in a column of re-optimised ones.
+- **The board reserves places for reactions that act through the cofactor pools.** Every other
+  slate reaches a reaction through carbon — how near it is to the product, how near it is to a
+  secreted byproduct, how much flux it carries — so a reaction that changes the product through
+  the ATP or redox balance is invisible to all of them. `ATPS4rpp` on `iJO1366` has no path to
+  D-lactate in the metabolite graph at all, sorts last of 2123, and was never offered once in
+  ten runs, while the same runs reported ATP as limiting by +3.0 on every tick. `COFACTOR_SHARE`
+  reserves a fifth of the board for the largest turners of ATP, NADH and NADPH, ranked on net
+  coefficient times flux carried. With it and `candidate_limit: 32` the D-lactate runs go from
+  no design in 10 of 10 to 17.9200 and 19.1199 in two of two, and the succinate configuration
+  improves from 9.945652 to 9.948666 in 10 of 10.
 - **The comparison carries the control that isolates what the agent's judgement added, at the
   depth the agent plays.** The control takes the same proven design the agent was seeded with
   and searches the same `knockdown_50` vocabulary on top of it, under the same growth floor,
@@ -588,14 +598,15 @@ solve in a run is deterministic. JEV's decisions are not, so the run's *path* va
 the two configurations measured with `evals/jev_replicates.py`, ten runs each, the *outcome*
 did not:
 
-| configuration | runs at the exhaustive-search answer | distinct designs | ticks | cost |
-|---|---:|---:|---:|---:|
-| succinate, `e_coli_core`, seeded | **10/10** at 9.945652 | 1 | 34–48 | $0.146 |
-| D-lactate, `iJO1366`, unseeded | **0/10** — all returned nothing | 1 (empty) | 20–26 | $0.245 |
+| configuration | outcome over ten runs | distinct designs | ticks | cost |
+|---|---|---:|---:|---:|
+| succinate, `e_coli_core`, seeded | **10/10** at 9.948666 | 1 | 40–44 | $0.151 |
+| D-lactate, `iJO1366`, unseeded — *old board* | **0/10**, no design at all | 1 (empty) | 20–26 | $0.245 |
 
-Both distributions are degenerate, in opposite directions: on the first the agent reaches the
-optimum of its own vocabulary every time, on the second it never finds a design at all. What
-varies between runs is how long it takes and what it looks at, not what it concludes.
+Both distributions are degenerate: the outcome repeats exactly while the path does not. The
+D-lactate row is kept because it is what the board looked like before the cofactor slate; on the
+fixed board only two runs exist, reaching 17.9200 and 19.1199, which is not a distribution and
+is not quoted as one.
 
 That is **two configurations, ten runs each**, and it is not a general claim about the method.
 An earlier build, before designs were ranked on the guarantee and before the strain designer

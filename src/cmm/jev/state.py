@@ -32,6 +32,7 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+import math
 
 from cobra import Model, Reaction
 
@@ -249,6 +250,23 @@ LITERATURE_EXCERPT_CHARS = 420
 
 NEAR_SHARE = 0.45
 COMPETING_SHARE = 0.35
+
+#: How much of the board is reserved for the largest turners of the ATP, NADH and NADPH pools.
+#:
+#: The other slates are built on the carbon graph — proximity to the product, proximity to a
+#: secreted byproduct — and on raw flux magnitude. A reaction that reaches the product through
+#: the *energy or redox balance* rather than through a carbon path is invisible to all three,
+#: and the gap is not hypothetical. On ``iJO1366`` under anaerobic glucose the only design that
+#: guarantees any D-lactate is ``ALCD2x`` plus ``ATPS4rpp``. ``ATPS4rpp`` is ATP synthase and
+#: has **no path at all** to the product in the metabolite graph, so its distance is ``None``
+#: and it sorts last of 2123; ``ALCD2x`` is five steps away and outranked. Neither was offered
+#: once in ten runs, while the run's own ``cofactor_limitation`` was telling the agent on every
+#: tick that the product was ATP-limited by +3.0 per unit. The diagnosis was on the screen and
+#: the move was not on the board.
+#:
+#: Ranked by pool turnover — the net coefficient times the flux carried — ``ATPS4rpp`` is third
+#: on ATP and ``ALCD2x`` is third on NADH.
+COFACTOR_SHARE = 0.20
 
 #: How far from a secreted byproduct a reaction still counts as part of that branch.
 BYPRODUCT_RADIUS = 2
@@ -980,6 +998,31 @@ def build_candidates(
         key=by_flux,
     )
 
+    # The cofactor slate: the largest turners of ATP, NADH and NADPH, by net coefficient times
+    # flux carried. Ranked on the largest of the three rather than on whichever pool is binding
+    # right now, deliberately — on the D-lactate case above the NADH marginal reads exactly
+    # +0.0000 while ``ALCD2x``, an NADH reaction, is half the answer, so gating on the marginal
+    # would have surfaced one member of the pair and hidden the other. Which pool binds also
+    # moves as the design grows, and this slate is rebuilt every tick.
+    # One ranking over the three pools, on the largest turnover of any of them. Interleaving
+    # the pools instead was tried and is worse here: it spends places on the NADPH ranking,
+    # whose fluxes are small on this condition, and drops one member of the D-lactate pair to
+    # gain the other. The merged ranking is also the simpler thing to reason about, and what
+    # decides whether both members fit is the size of the board rather than the order within
+    # this slate — see ``candidate_limit``.
+    def turnover(candidate: CandidateEvidence) -> float:
+        flux = candidate.reference_flux
+        return max(
+            abs(candidate.net_atp * flux),
+            abs(candidate.net_nadh * flux),
+            abs(candidate.net_nadph * flux),
+        )
+
+    cofactor = sorted(
+        (c for c in evidence.values() if turnover(c) > DISPLAY_EPSILON),
+        key=lambda c: (-turnover(c), c.reaction_id),
+    )
+
     pinned_slate = [
         evidence[reaction_id]
         for reaction_id in dict.fromkeys(pinned)
@@ -987,11 +1030,16 @@ def build_candidates(
     ]
     quota_near = max(1, round(limit * NEAR_SHARE))
     quota_competing = max(1, round(limit * COMPETING_SHARE))
+    # Rounded up, not to nearest: at a board of 24 the nearest is 5, and the D-lactate pair
+    # needs the sixth place. A slate that reaches five of the six reactions it exists for is
+    # not worth its places.
+    quota_cofactor = max(1, math.ceil(limit * COFACTOR_SHARE))
     board: dict[str, CandidateEvidence] = {}
     for slate, quota in (
         (pinned_slate, limit),
         (near, quota_near),
         (competing, quota_competing),
+        (cofactor, quota_cofactor),
         (carriers, limit),
     ):
         taken = 0

@@ -3558,3 +3558,59 @@ def test_a_move_records_what_it_was_chosen_over(anaerobic_core_path) -> None:
 
     page = render_agent_report(result)
     assert "How each of those moves was chosen" in page
+
+
+def test_a_reaction_that_acts_through_the_energy_balance_reaches_the_board(
+    ecoli_core,
+) -> None:
+    """The board's other slates are built on the carbon graph, and some designs are not.
+
+    Every slate but this one reaches a reaction through carbon: how near it is to the product,
+    how near it is to a secreted byproduct, or how much flux it carries. A reaction that acts on
+    the product through the ATP or redox balance is invisible to all three — and on ``iJO1366``
+    that is not hypothetical, because the only design guaranteeing any D-lactate is ``ALCD2x``
+    plus ``ATPS4rpp``, and ``ATPS4rpp`` has no path to the product in the metabolite graph at
+    all. Its distance is ``None``, it sorts last of 2123, and it was never offered once in ten
+    runs while the same runs were telling the agent the product was ATP-limited.
+
+    Checked here on ``e_coli_core``, where ``ATPS4r`` is the same reaction and the same kind of
+    blind spot: it turns the largest ATP flux in the model and is five steps from succinate.
+    """
+
+    from cmm.core.simulation import pfba
+    from cmm.jev import state as state_module
+    from cmm.jev.state import build_candidates, product_distances, resolve_pools
+
+    ANAEROBIC.apply_to(ecoli_core)
+    fluxes = dict(pfba(ecoli_core).fluxes)
+    pools = resolve_pools(ecoli_core)
+
+    def board(limit: int) -> list[str]:
+        return [
+            candidate.reaction_id
+            for candidate in build_candidates(
+                ecoli_core,
+                product_reaction_id="EX_succ_e",
+                reference_fluxes=fluxes,
+                current_fluxes=fluxes,
+                limit=limit,
+                pools=pools,
+            )
+        ]
+
+    # It is not close to the product, so the near slate cannot supply it.
+    distance = product_distances(ecoli_core, "EX_succ_e").get("ATPS4r")
+    assert distance is None or distance > 2
+
+    # A board of 28 is where the difference is visible on this model: with the slate `ATPS4r`
+    # is offered, without it the places go to reactions the other slates already reach. At 24
+    # the board is too small for it either way, and at 32 the carriers slate gets there on its
+    # own — which is itself the finding, because on `iJO1366` no board size reaches it at all
+    # without this slate.
+    original = state_module.COFACTOR_SHARE
+    try:
+        assert "ATPS4r" in board(28)
+        state_module.COFACTOR_SHARE = 0.0
+        assert "ATPS4r" not in board(28)
+    finally:
+        state_module.COFACTOR_SHARE = original
