@@ -20,6 +20,27 @@ What it deliberately does **not** measure:
 - **Whether the science is the best available.** `validate_production_run` is a completion gate,
   not a peer review.
 
+## The JEV replicate harness
+
+[`jev_replicates.py`](jev_replicates.py) answers a different question from the task checks
+above: not "does this run honour the contracts" but "what does this configuration do when you
+run it more than once". A JEV design quoted from one run says nothing about the method, because
+the decision model's choices are not guaranteed to repeat.
+
+```bash
+uv run --frozen --all-extras python evals/jev_replicates.py \
+    examples/jev-design/config.json --runs 10 --target 9.945652
+```
+
+`--target` is what an exhaustive search of the same move vocabulary reached, when that is known,
+so the report can say how often the agent got there. It reports the **guaranteed product**,
+which is what a run ranks designs on. Needs `OPENROUTER_API_KEY`; costs about $0.015 a run on
+`e_coli_core` and $0.025 on `iJO1366`.
+
+Measured, ten runs each: the succinate configuration reaches 9.945652 in 10 of 10 with one
+distinct design, and the genome-scale D-lactate configuration returns no design in 10 of 10.
+Both outcomes are degenerate and opposite; what varies is the path.
+
 ## Quick commands
 
 ```bash

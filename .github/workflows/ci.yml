@@ -167,6 +167,7 @@ jobs:
               "evals/README.md",
               "evals/run_evals.py",
               "evals/check_service_use.py",
+              "evals/jev_replicates.py",
               "evals/tasks/sc01_production.json",
               "evals/tasks/sc02_transformation.json",
           }

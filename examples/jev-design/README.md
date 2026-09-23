@@ -120,10 +120,16 @@ vocabulary — and the row prices that decision in every run rather than leaving
 argument. It is measured on the design being scored, not on the wild type, because on the
 wild type FSEOF's top amplification target for succinate buys nothing at all.
 
-This is one run, on one problem, on one small model. The agent's choices are not guaranteed to
-repeat — two runs of this configuration have produced designs differing several-fold — so
-nothing here is a claim about the method, let alone about your model. Claiming agent performance
-needs repeated runs and a stated distribution, which this example does not provide.
+This is one problem, on one small model. What the agent's choices do across runs is measured
+rather than assumed: ten runs of exactly this configuration, through
+`evals/jev_replicates.py`, reached 9.945652 — the exhaustive sweep's answer — in **10 of 10**,
+with the same four-edit design each time, varying only in how long they took (34 to 48 steps,
+$0.012 to $0.018). The outcome here is effectively deterministic even though the decisions are
+not.
+
+That is a statement about *this* configuration. On the genome-scale D-lactate example the same
+harness returns no design in 10 of 10. Neither is a claim about the method, and nothing here is
+a claim about your model.
 
 ## What it costs
 
@@ -152,12 +158,16 @@ results/example-jev-succinate/
 
 ## Read the result honestly
 
-**The agent's choices are not guaranteed to repeat.** The CMM solves behind them are
-deterministic; the decisions are not. Repeated runs of this exact config have produced designs
-differing several-fold in succinate flux. The transcript is what makes a single run auditable;
-it is not what makes the method reproducible. Do not quote one run as the method's
-performance, and do not compare a single JEV run against a deterministic method as though the
-two were the same kind of measurement.
+**The agent's choices are not guaranteed to repeat, so the run was repeated.** The CMM solves
+behind them are deterministic; the decisions are not. On this exact config the outcome turns
+out to be anyway — ten runs, the same four-edit design and the same 9.945652 every time, with
+only the path varying. That is measured, not assumed, and it holds for *this* configuration: on
+the genome-scale D-lactate example the same harness returns no design in 10 of 10.
+
+The transcript is what makes a single run auditable; it is not what makes the method
+reproducible. Do not quote one run as the method's performance on a problem where the spread
+has not been measured, and do not compare a single JEV run against a deterministic method as
+though the two were the same kind of measurement.
 
 A run that fails to beat the wild type is a real result. Report it as one.
 

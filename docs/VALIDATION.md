@@ -583,13 +583,29 @@ is an ordinary CMM solve. What is validated is the loop, not the agent:
   verdict repeats it, because "the agent beat OptKnock" and "the agent added one edit to
   OptKnock's answer" are not the same claim.
 
-**Reproducibility is partial and must be stated as such.** Every CMM solve in a run is
-deterministic. JEV's decisions are not guaranteed to repeat: repeated runs of the same
-configuration have produced designs differing several-fold in product flux.
-`04_agent/transcript.jsonl` records every request and response so a single run can be
-audited; it does not make the method reproducible. A single run is evidence about that run.
-Claiming agent performance requires repeated runs and a stated distribution, which this
-release does not provide. The within-run comparison above *does* run the deterministic methods
+**Reproducibility is partial, and the spread is measured rather than asserted.** Every CMM
+solve in a run is deterministic. JEV's decisions are not, so the run's *path* varies — and on
+the two configurations measured with `evals/jev_replicates.py`, ten runs each, the *outcome*
+did not:
+
+| configuration | runs at the exhaustive-search answer | distinct designs | ticks | cost |
+|---|---:|---:|---:|---:|
+| succinate, `e_coli_core`, seeded | **10/10** at 9.945652 | 1 | 34–48 | $0.146 |
+| D-lactate, `iJO1366`, unseeded | **0/10** — all returned nothing | 1 (empty) | 20–26 | $0.245 |
+
+Both distributions are degenerate, in opposite directions: on the first the agent reaches the
+optimum of its own vocabulary every time, on the second it never finds a design at all. What
+varies between runs is how long it takes and what it looks at, not what it concludes.
+
+That is **two configurations, ten runs each**, and it is not a general claim about the method.
+An earlier build, before designs were ranked on the guarantee and before the strain designer
+seeded the board, produced designs differing several-fold on the succinate configuration; that
+is no longer what this one does. `04_agent/transcript.jsonl` records every request and response
+so a single run can be audited, and `evals/jev_replicates.py` is how the spread above is
+reproduced.
+
+A single run remains evidence about that run. Claiming agent performance on a *new* problem
+still requires repeating it there and stating the distribution. The within-run comparison above *does* run the deterministic methods
 on the same model and condition, which is a co-measurement of one run and not a benchmark study
 of the method.
 

@@ -154,7 +154,16 @@ The file is plain text at `0600`; `cmm.jev.credentials.clear_key()` removes it.
 
 ## What a run here does not establish
 
-Everything SC-03 says still applies, and one thing more. The agent's choices are not
-guaranteed to repeat, so a single run that crosses the plateau is evidence about that run, not
-about the method. Crossing it once is interesting; crossing it in most of *n* runs, with the
-distribution stated, is a result. This example does not provide that.
+Everything SC-03 says still applies, and one thing more. Crossing the plateau once would be
+evidence about that run, not about the method — so the run was repeated. Ten runs of this exact
+configuration through `evals/jev_replicates.py` returned **no design in 10 of 10**, varying only
+in path (20 to 26 steps, $0.021 to $0.028, $0.245 in total). The failure is as reproducible as
+the succinate example's success, which is 10 of 10 the other way.
+
+Ten runs of one configuration is not a statement about the method, and a build that changed the
+board, the budget or the brief would have to be measured again:
+
+```bash
+uv run --frozen --all-extras python evals/jev_replicates.py \
+    examples/jev-lactate-genome-scale/config.json --runs 10 --target 17.5858
+```

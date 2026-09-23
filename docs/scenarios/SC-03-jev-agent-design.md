@@ -613,11 +613,16 @@ is not evidence that it will on yours. Run the comparison; it is on by default.
 
 ## What a run does **not** establish
 
-- **It is not reproducible in the agent's choices.** The CMM solves are deterministic; JEV's
-  answers are not guaranteed to repeat, and two runs of the same config have produced designs
-  differing several-fold in product flux. `04_agent/transcript.jsonl` records every request
-  and response so that *one* run can be audited. Never present a single run as the method's
-  performance.
+- **It is not reproducible in the agent's choices, and the spread is measured.** The CMM solves
+  are deterministic; JEV's answers are not guaranteed to repeat. Ten runs each of two
+  configurations, through `evals/jev_replicates.py`: succinate on `e_coli_core` reached
+  9.945652 — the exhaustive sweep's answer — in **10 of 10**, one distinct design, 34 to 48
+  steps; D-lactate on `iJO1366` returned **no design in 10 of 10**. Both outcomes are
+  degenerate and opposite, so what varies between runs is the path and not the conclusion. An
+  earlier build, before designs were ranked on the guarantee and before the designer seeded the
+  board, did produce designs differing several-fold on the first of those; that is no longer
+  what this one does. Two configurations are not the method, `04_agent/transcript.jsonl` makes
+  one run auditable, and a single run is still never the method's performance.
 - **It is not a benchmark against FSEOF or OptKnock.** Comparing them needs
   `cmm production-targets` on the same model and condition, and a comparison of the two run
   directories. That is a separate piece of work and this scenario does not do it.
