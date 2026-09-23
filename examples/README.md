@@ -8,6 +8,7 @@ installed. Both use the public CLI and write a validated, self-contained report 
 | SC-01 production-target discovery | [E. coli succinate](production-targets/README.md) | `results/example-production-succinate/` |
 | SC-02 transformation-target discovery | [MTA and rMTA on the existing synthetic model](transformation-targets/README.md) | `results/example-transformation-mta/`, `results/example-transformation-rmta/` |
 | SC-03 agent design *(not a canonical workflow)* | [JEV on anaerobic succinate](jev-design/README.md) | `results/example-jev-succinate/` |
+| SC-03 at genome scale *(not a canonical workflow)* | [JEV on D-lactate in iJO1366](jev-lactate-genome-scale/README.md) | `results/example-jev-lactate-ijo1366/` |
 
 SC-03 is listed for completeness and is **not** a canonical workflow: it has no publication
 renderer and no completion gate, `cmm report` refuses it, and it needs `OPENROUTER_API_KEY`.

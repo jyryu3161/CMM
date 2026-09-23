@@ -506,11 +506,24 @@ orders of magnitude.
 
 *And a search that takes the best move each step cannot always find it.* For D-lactate, **no
 single move produces any product at all** — every one of 2526 knockouts and knockdowns scores
-0.0000 — while the pair `ATPS4rpp` + `ALCD2x` reaches 17.59. Neither move pays alone; together
+0.0000 — while the pair `ATPS4rpp` + `ALCD2x` reaches 17.5858. Neither move pays alone; together
 they are the design. Greedy stops dead on that plateau, so on a problem shaped like this one the
 control is a floor and not a ceiling, and it says so in its own note. This is the first measured
 case where the region genuinely needs something more than one-move-at-a-time search — which is
 what an argument for a decision model has to look like.
+
+Anchoring on each of those two moves and sweeping **every** partner on the board — 2123
+gene-associated reactions, both actions, about 1790 viable partners per anchor — confirms
+17.5858 as the target and turns up a portfolio behind it: `ALCD2x`↓50% + `ATPS4rpp`✗ at 13.547,
+`ALCD2x`↓50% + `PFL`✗ at 13.153 and growth 0.189, `ALCD2x`↓50% + `ACKr`✗ at 12.395 and growth
+0.197. Four of the five best **mix a knockdown with a knockout**, which is precisely the shape
+OptKnock cannot express, and they trade product against growth across a range a laboratory would
+choose within.
+
+That same sweep is the sharpest illustration of why designs are ranked on the guarantee. Ranked
+on the pFBA optimum instead, the best partners for `ATPS4rpp` are `GLCptspp`, `PGI` and
+`CHTBSptspp` at 19.02 — and every one of them has a guaranteed product of **0.0000**. The strain
+could make 19 and need never make any. Four spectacular designs that are not designs.
 
 L-alanine and L-glutamate returned nothing at either depth on this screen. That is **not**
 evidence the region is empty for them: with every single move tied at zero the shortlist the
@@ -519,10 +532,26 @@ A plateau problem needs a pair search over the whole board, which is 3.2 million
 `iJO1366` and was not run.
 
 **And the cost side reverses too.** OptKnock on `e_coli_core` takes 1.2 s; on `iJO1366` the same
-call with `max_knockouts=3, max_solutions=3` took **1417 s**. A JEV run is about 50 calls, a
-minute of wall clock and roughly a cent. Whatever else is true, "the deterministic method is
-instant and the agent is expensive" stops being the right framing at genome scale — though the
-agent's own `seed_with_strain_design` pays that same 1417 s before its first move.
+call with `max_knockouts=3, max_solutions=3` took **1417 s** for succinate and **2773 s** for
+D-lactate. A JEV run is about 50 calls, a minute of wall clock and roughly a cent. Whatever else
+is true, "the deterministic method is instant and the agent is expensive" stops being the right
+framing at genome scale — though the agent's own `seed_with_strain_design` pays that same cost
+before its first move.
+
+**On D-lactate the designer does not solve the problem at all.** Those 2773 s returned five
+designs, every one of them guaranteeing **0.0000** — `ATPS4rpp, PPC, TPI` at growth 0.0504,
+`GLCptspp, PFL, TPI` at 0.0539, and three more like them, each re-scored here independently of
+the designer. Meanwhile `ALCD2x` + `ATPS4rpp`, **two** knockouts and so inside OptKnock's own
+three-knockout budget, guarantees 17.5858 at growth 0.1625. Better on both axes, and the
+designer did not return it.
+
+Why is not established: a node or time limit inside `straindesign`, a compression artifact, or
+something in the formulation are all live possibilities and none was checked. What is
+established is that the method this comparison treats as the standard to beat can return
+nothing usable on a genome-scale problem while a strictly better design sits in its search
+space. A run that quotes an `OptKnock` row is quoting whatever the designer returned, not the
+best design that exists — which is one more reason the comparison scores every row itself
+rather than trusting each method's own number.
 
 **Every method is held to `off_limits`, not just the agent.** The agent never sees a forbidden
 reaction; a deterministic row that used one would be winning on a design the person running this
