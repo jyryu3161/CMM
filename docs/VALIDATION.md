@@ -538,10 +538,18 @@ is an ordinary CMM solve. What is validated is the loop, not the agent:
   On anaerobic succinate the control reaches 9.9457 through `ACKr` at every depth from one to
   three, which is exactly what the shipped agent run reached. An exhaustive sweep of all 496
   knockdown pairs on the same design returns the same 9.9457, so the depth-2 region is empty
-  for every method on this problem. That OptKnock's formulation cannot express a knockdown is
+  for every method on that problem. That OptKnock's formulation cannot express a knockdown is
   true; that finding the knockdown needs a decision model does not follow, and this row is what
-  tests the difference — here it says the agent found the optimum of its own vocabulary, and
-  that a one-second search finds it too.
+  tests the difference.
+
+  **The control is a floor, not a ceiling, and reports when it cannot be more.** A search that
+  takes the best move each step cannot cross a plateau. Measured on `iJO1366` under the same
+  condition: for D-lactate every one of 2526 single knockouts and knockdowns reaches 0.0000
+  product, and the pair `ATPS4rpp` + `ALCD2x` reaches 17.5858. Neither move pays alone. When any
+  greedy step fails to improve on the one before it the row says so in its note, because on a
+  problem shaped like that its number bounds nothing. The same measurement also shows the region
+  is real where it exists: one knockdown on OptKnock's genome-scale succinate design takes the
+  guarantee from 9.1055 to 12.4015, a 36% gain, against 0.36% on `e_coli_core`.
 - **`off_limits` binds every method, not only the agent.** The agent is refused an off-limits
   reaction before it sees the board, so a deterministic row that used one would be winning on a
   design the person running this said they would not build — two questions in one column. The

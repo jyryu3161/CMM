@@ -871,6 +871,7 @@ def _knockdown_sweep_row(
     started = time.perf_counter()
     depth = max(int(max_knockdowns), 0)
     label = _sweep_label(depth)
+    base_guarantee = _guarantee(model, base_bounds, product=product, biomass=biomass)
     if not base_design or depth < 1:
         return (
             BaselineRow(
@@ -893,6 +894,8 @@ def _knockdown_sweep_row(
     standing = dict(base_bounds)
     applied: list[str] = []
     tried_total = 0
+    reached = base_guarantee
+    plateau = False
     for _ in range(depth):
         step = _best_single_knockdown(
             model,
@@ -905,7 +908,15 @@ def _knockdown_sweep_row(
         )
         if step is None:
             break
-        _, _, standing, described, n_tried = step
+        gained, _, standing, described, n_tried = step
+        # A step that improves nothing is a plateau, and a plateau is the one place a
+        # one-move-at-a-time search is not a bound on what the vocabulary can reach. Measured
+        # on iJO1366 D-lactate: every single move reaches 0.0000 and the pair
+        # ``ATPS4rpp`` + ``ALCD2x`` reaches 17.5858, so a search that needs the first move to
+        # pay never takes the second and reports nothing where a design exists.
+        if reached is not None and gained is not None and gained <= reached + 1e-9:
+            plateau = True
+        reached = gained
         applied.append(described)
         tried_total += n_tried
 
@@ -931,6 +942,17 @@ def _knockdown_sweep_row(
         if depth == 1
         else f"greedily to a depth of {len(applied)}, best move first"
     )
+    caveat = (
+        ""
+        if not plateau
+        else (
+            ". CAVEAT: at some depth no single move improved on the one before it. A search "
+            "that takes the best move each step cannot cross a plateau, so this row is not an "
+            "upper bound on what the vocabulary can reach — measured on iJO1366 D-lactate, "
+            "every single move reaches 0 and the pair ATPS4rpp + ALCD2x reaches 17.59. Read "
+            "the agent against it as a floor, not a ceiling"
+        )
+    )
     return (
         BaselineRow(
             method=label,
@@ -946,7 +968,7 @@ def _knockdown_sweep_row(
                 f"the {base_label} design plus {len(applied)} knockdown(s), searched {how} "
                 f"over {tried_total} trial move(s) and ranked on guaranteed product. No "
                 "judgement anywhere in this row — it is what searching the agent's own "
-                "vocabulary from the agent's own starting point already gives"
+                "vocabulary from the agent's own starting point already gives" + caveat
             ),
         ),
         standing,

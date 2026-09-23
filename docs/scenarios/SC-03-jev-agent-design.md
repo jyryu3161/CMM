@@ -485,6 +485,45 @@ OptKnock's, has exactly one move in it on anaerobic succinate, and the agent fou
 whether judgement pays in that region needs a problem where the region is not a single point;
 raising `max_knockdowns` on this one does not create one.
 
+**That is a property of this problem, not of the method.** Repeated on `iJO1366` under the same
+anaerobic glucose condition, with OptKnock's own genome-scale answer (`ALCD2x`, `LDH_D`, `PFL`,
+9.1055 guaranteed, found in 1417 s) as the base:
+
+| | best single knockdown | best pair | gain from the second |
+|---|---:|---:|---:|
+| succinate on `e_coli_core` | 9.9457 | 9.9457 | +0.000000 |
+| succinate on `iJO1366` | **12.4015** (`PGI` or `GLCptspp`) | 12.4022 | +0.000727 |
+| D-lactate on `iJO1366`, from the wild type | **0.0000** | **17.5858** (`ATPS4rpp` + `ALCD2x`) | **+17.585806** |
+
+Two things follow and they point in opposite directions.
+
+*The region is real and it is large.* One knockdown on top of OptKnock's genome-scale succinate
+design takes the guarantee from 9.11 to **12.40, a 36% gain**, and `PGI` — halving
+phosphoglucose isomerase to push carbon into the pentose phosphate pathway — is a move OptKnock's
+formulation cannot write down and a laboratory would recognise. On `e_coli_core` the same
+measurement gave 0.36%. The small model understated the case for a mixed vocabulary by two
+orders of magnitude.
+
+*And a search that takes the best move each step cannot always find it.* For D-lactate, **no
+single move produces any product at all** — every one of 2526 knockouts and knockdowns scores
+0.0000 — while the pair `ATPS4rpp` + `ALCD2x` reaches 17.59. Neither move pays alone; together
+they are the design. Greedy stops dead on that plateau, so on a problem shaped like this one the
+control is a floor and not a ceiling, and it says so in its own note. This is the first measured
+case where the region genuinely needs something more than one-move-at-a-time search — which is
+what an argument for a decision model has to look like.
+
+L-alanine and L-glutamate returned nothing at either depth on this screen. That is **not**
+evidence the region is empty for them: with every single move tied at zero the shortlist the
+pair search draws from is arbitrary, so the pairs that were tried were not the informative ones.
+A plateau problem needs a pair search over the whole board, which is 3.2 million pairs on
+`iJO1366` and was not run.
+
+**And the cost side reverses too.** OptKnock on `e_coli_core` takes 1.2 s; on `iJO1366` the same
+call with `max_knockouts=3, max_solutions=3` took **1417 s**. A JEV run is about 50 calls, a
+minute of wall clock and roughly a cent. Whatever else is true, "the deterministic method is
+instant and the agent is expensive" stops being the right framing at genome scale — though the
+agent's own `seed_with_strain_design` pays that same 1417 s before its first move.
+
 **Every method is held to `off_limits`, not just the agent.** The agent never sees a forbidden
 reaction; a deterministic row that used one would be winning on a design the person running this
 said they would not build. The designers take no exclusion argument, so the constraint is
