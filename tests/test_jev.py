@@ -3614,3 +3614,62 @@ def test_a_reaction_that_acts_through_the_energy_balance_reaches_the_board(
         assert "ATPS4r" not in board(28)
     finally:
         state_module.COFACTOR_SHARE = original
+
+
+def test_the_expensive_scan_is_not_forgotten_by_an_undo(anaerobic_core_path) -> None:
+    """A designer call survives a withdrawal, because an undo does not un-run it.
+
+    ``ScanCache.snapshot`` is taken before a move and restored when the move is withdrawn, so a
+    scan that ran *after* the snapshot was rolled back out of ``completed`` and offered again.
+    On ``e_coli_core`` that is a wasted second. On ``iJO1366`` ``strain_design_scan`` is
+    OptKnock and RobustKnock over 2583 reactions: one D-lactate run called it twice, spent
+    4.8 hours against the 10 minutes its neighbour spent making none, and neither call put a
+    reaction into the design it finally reported.
+    """
+
+    pytest.importorskip("straindesign")
+    from cmm.jev.state import ScanCache
+
+    # The mechanism, directly: what is permanent survives a restore, what is not does not.
+    cache = ScanCache()
+    before = cache.snapshot()
+    cache.completed.add("strain_design_scan")
+    cache.completed.add("fseof_scan")
+    cache.designs.append(("OptKnock", ("ACALD",), 9.9))
+    cache.restore(before)
+    assert "strain_design_scan" in cache.completed
+    assert "fseof_scan" not in cache.completed
+    assert cache.designs, "what the designer found is a fact about the model"
+
+    # And end to end: an agent that scans, applies, then withdraws is not offered the scan
+    # a second time.
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        condition=ANAEROBIC,
+        rounds=1,
+        steps_per_round=6,
+        growth_floor=0.01,
+        run_moma=False,
+        run_baseline_comparison=False,
+        seed_with_strain_design=False,
+        screen_interventions=False,
+        design_max_solutions=1,
+    )
+    result = run_jev_design(
+        config,
+        client=ScriptedClient(
+            # A LOOK move is chosen at the action stage, on a reaction picked at the first.
+            [
+                ("PFL", "strain_design_scan"),
+                ("PFL", "knockout"),
+                ("undo_last", None),
+                ("PFL", "strain_design_scan"),
+                ("end_round", None),
+            ]
+        ),
+    )
+    scans = [t for t in result.ticks if t.action == "strain_design_scan"]
+    assert len(scans) == 1, [t.headline() for t in result.ticks]
+    # And its cost is on the record, because it is the one move that can dominate a run.
+    assert "s]" in scans[0].reason

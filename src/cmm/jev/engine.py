@@ -53,6 +53,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 import json
 import math
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -124,6 +125,11 @@ TickOutcome = Literal[
     "not_applicable",
     "budget_exhausted",
 ]
+
+#: How long a LOOK move may take before the run says so on the board. A scan is a real CMM
+#: analysis and its cost tracks the model: the whole LOOK vocabulary is sub-second on
+#: ``e_coli_core`` and ``strain_design_scan`` is hours on a genome-scale one.
+_SLOW_SCAN_SECONDS = 60.0
 
 #: Reasons a run can stop before playing every round, for the summary to state plainly.
 STOP_REQUESTED = "the run was stopped from the interface"
@@ -1903,9 +1909,24 @@ def _play_tick(
 
     # -- LOOK: run a CMM analysis, change nothing ---------------------------
     if action.kind == "look":
+        # Timed, and the time is part of the answer. A LOOK move costs what the CMM analysis
+        # behind it costs, and that ranges over four orders of magnitude with the model: on
+        # ``e_coli_core`` ``strain_design_scan`` is about a second, on ``iJO1366`` it is
+        # OptKnock and RobustKnock over 2583 reactions and took about 2.3 hours. A run that
+        # spent 4.8 hours where its neighbour spent ten minutes gave no sign of where the time
+        # had gone, because nothing recorded it.
+        started = time.perf_counter()
         reason = _run_scan(
             board, action.name, candidates, config, use_linear_moma=use_linear_moma
         )
+        elapsed = time.perf_counter() - started
+        reason = f"{reason} [{elapsed:.1f}s]"
+        if elapsed > _SLOW_SCAN_SECONDS:
+            board.state_notes.append(
+                f"{action.name} took {elapsed / 60:.0f} minutes on this model. It is a real "
+                "CMM analysis and it costs what it costs; spend another look only if the "
+                "answer is worth that."
+            )
         board.scans.completed.add(action.name)
         return frame(
             action=action.name,

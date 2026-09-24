@@ -156,14 +156,31 @@ deterministic answer on the very problem meant to test whether it can find one i
 the comparison to take longer than the game. Set it to `false` for a first look — the two runs
 reported above did.
 
-**And the game itself is slow here, unevenly.** Measured with baselines off: run 1 took 588 s
-over 56 steps, run 2 took **17272 s — 4.8 hours — over 86 steps**. Per-step cost grows with the
-design, because `screen_interventions` re-measures the whole board every time the design changes
-(2 solves × 32 candidates), and the guarantee, the cofactor marginals and MOMA are each paid per
-tick on a 2583-reaction model. A run that keeps finding improvements keeps playing, so the runs
-that work are the expensive ones. Budget hours, not minutes, and set `screen_interventions:
-false` or a smaller `steps_per_round` if that is not affordable — both change what the agent
-sees, so say which you used.
+**And one LOOK move can dominate everything else.** Measured with baselines off: run 1 took
+588 s over 56 steps, run 2 took **17272 s — 4.8 hours — over 86 steps**. The difference is not
+the extra steps and it is not the design getting harder to solve. Profiled at every depth of
+run 2's own design, the per-tick solver cost is flat at about 9.5 s:
+
+| depth | pFBA | guarantee | cofactors | MOMA | screen (32) | total |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 0.13 | 0.40 | 0.07 | 1.95 | 6.69 | 9.48 |
+| 3 | 0.11 | 0.39 | 0.08 | 2.37 | 6.13 | 9.38 |
+| 6 | 0.11 | 0.45 | 0.06 | 2.43 | 6.21 | 9.50 |
+
+86 steps of that is 820 s, and the decision calls added 66 s. The other **4.6 hours** were two
+`strain_design_scan` LOOK moves: on this model that is OptKnock *and* RobustKnock over 2583
+reactions, about 2.3 hours each. Run 1 made none, which is the whole of the difference. Neither
+call put a single reaction into the design run 2 reported — the reactions it pinned were
+`ACACT3r`, `ACOAD1f`, `PGCD` and friends, and `ATPS4rpp` had already been applied at R1T2.
+
+It also should not have been able to make two. A scan is recorded as done, but `ScanCache`
+snapshots are taken before a move and restored when it is withdrawn, which rolled that record
+back. Permanent scans survive a restore now, and every LOOK move is timed, reported in its own
+`reason`, and flagged on the board when it runs long — so a run can no longer spend 2.3 hours
+without saying so.
+
+The rest is honest cost. `screen_interventions` is 6 s of the 9.5, and turning it off or
+shrinking `steps_per_round` changes what the agent sees, so say which you used.
 
 ## The key
 

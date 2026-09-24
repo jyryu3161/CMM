@@ -1309,6 +1309,15 @@ class ScanCache:
             )
         return tuple(enriched)
 
+    #: Scans whose answer is a fact about the *model* rather than about the standing design,
+    #: and which therefore survive both a design change and an undo. ``strain_design_scan`` is
+    #: here because it is the expensive one and because re-running it is what makes a run
+    #: unaffordable: on ``iJO1366`` it is OptKnock **and** RobustKnock over 2583 reactions, and
+    #: one call took about 2.3 hours. A D-lactate run that made two of them spent 4.8 hours
+    #: against 10 minutes for the run beside it that made none, and neither call put a single
+    #: reaction into the design that run finally reported.
+    PERMANENT = frozenset({"strain_design_scan"})
+
     def invalidate(self) -> None:
         """Forget the scans that the current bounds make stale, and only those.
 
@@ -1350,7 +1359,14 @@ class ScanCache:
         )
 
     def restore(self, snapshot: "ScanCache") -> None:
-        """Adopt a previous snapshot's contents in place."""
+        """Adopt a previous snapshot's contents in place.
+
+        A permanent scan stays run. The snapshot was taken *before* it, so restoring one
+        wholesale rolls back the record that it happened and the move is offered again — which
+        is how a run came to call the strain designer twice, at about 2.3 hours each, for
+        nothing. What the designer found is a fact about the model and is kept for the same
+        reason ``invalidate`` keeps it.
+        """
 
         self.essential = dict(snapshot.essential)
         self.fseof_slopes = dict(snapshot.fseof_slopes)
@@ -1358,9 +1374,9 @@ class ScanCache:
         self.knockdown_gains = dict(snapshot.knockdown_gains)
         self.envelope_note = snapshot.envelope_note
         self.literature = dict(snapshot.literature)
-        self.design_notes = dict(snapshot.design_notes)
-        self.designs = list(snapshot.designs)
-        self.completed = set(snapshot.completed)
+        self.design_notes = dict(snapshot.design_notes) or dict(self.design_notes)
+        self.designs = list(snapshot.designs) or list(self.designs)
+        self.completed = set(snapshot.completed) | (self.completed & self.PERMANENT)
 
     def knows(self, reaction_id: str) -> tuple[bool, bool]:
         """Whether essentiality and the FSEOF slope are already known for this reaction."""
