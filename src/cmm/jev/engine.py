@@ -50,7 +50,7 @@ then be comparing everything against instead of the organism.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import json
 import math
 import time
@@ -73,6 +73,7 @@ from cmm.jev.actions import (
     ADOPT_ACTION,
     END_ACTION,
     GENTLER_ALTERNATIVE,
+    LOOK_ACTIONS,
     RESTORE_ACTION,
     UNDO_ACTION,
     ActionNotApplicable,
@@ -133,6 +134,7 @@ _SLOW_SCAN_SECONDS = 60.0
 
 #: Reasons a run can stop before playing every round, for the summary to state plainly.
 STOP_REQUESTED = "the run was stopped from the interface"
+STOP_OUT_OF_TIME = "the run reached its wall-clock limit"
 
 #: Outcomes that leave the model carrying different bounds than it did before the tick. Only
 #: these can change what the design is worth, so only these are re-measured and only these can
@@ -220,6 +222,42 @@ class JevConfig:
     growth_floor: float = 0.05
     candidate_limit: int = 24
     allow_look_actions: bool = True
+    #: LOOK moves this run will not offer, by name. ``allow_look_actions`` is all-or-nothing and
+    #: the vocabulary is not: on ``e_coli_core`` every scan is sub-second, while on a
+    #: genome-scale model ``strain_design_scan`` is OptKnock *and* RobustKnock over 2583
+    #: reactions and took about 2.3 hours a call. A run that does not want to spend that should
+    #: be able to say so without giving up the cheap looks as well, and the choice is recorded
+    #: in provenance because it changes what the agent could see.
+    #:
+    #: It is also the honest setting when ``seed_with_strain_design`` is off: letting the agent
+    #: call the designer through a look is seeding by another route, just unbudgeted.
+    disabled_look_actions: tuple[str, ...] = ()
+    #: How long one LOOK move may take before its kind is withheld for the rest of the run.
+    #:
+    #: A scan is a real CMM analysis and its cost tracks the model over four orders of
+    #: magnitude. Measured on ``iJO1366`` under anaerobic glucose: ``fseof_scan`` 1.0 s,
+    #: ``envelope_probe`` 0.2 s, ``strain_design_scan`` about 2.3 hours, and
+    #: ``state_distance_check`` — which runs ROOM, a MILP over 2583 binaries — had not returned
+    #: after 25 minutes. All five are sub-second on ``e_coli_core``, which is the model the
+    #: vocabulary was designed against.
+    #:
+    #: This cannot interrupt a solve that has already started, so a kind that busts the budget
+    #: is paid for exactly once and then never offered again. To avoid paying at all, name it
+    #: in ``disabled_look_actions``.
+    max_scan_seconds: float = 120.0
+    #: Wall clock the whole run may spend before it stops and reports what it has.
+    #:
+    #: The agent budgets — ``max_decisions``, ``max_cost_usd`` — bound what the *service* costs,
+    #: and on a small model that is the whole story. On a genome-scale one it is not: a step is
+    #: mostly CMM solving, and how long a run takes depends on what the agent chooses to look at.
+    #: Ten replicates of one D-lactate config on ``iJO1366`` ran 10 minutes, 4.8 hours, and
+    #: longer again, on the same settings, because the paths differed. A study cannot be planned
+    #: against that.
+    #:
+    #: Stopping on the clock is the same answer as the interface's stop button: everything
+    #: played is kept and scored, the best design is reported, and the run says it stopped this
+    #: way. ``None`` is no limit, which is the old behaviour.
+    max_run_seconds: float | None = None
     run_moma: bool = True
     #: Bounds on the ``strain_design_scan`` LOOK move. It runs the same OptKnock and
     #: RobustKnock services the SC-01 workflow uses, so its cost is theirs.
@@ -309,10 +347,23 @@ class JevConfig:
             raise ValueError("growth_floor must be non-negative")
         if self.candidate_limit < 2:
             raise ValueError("candidate_limit must be at least 2 for a choice question")
+        unknown = sorted(
+            set(self.disabled_look_actions) - {action.name for action in LOOK_ACTIONS}
+        )
+        if unknown:
+            raise ValueError(
+                "these disabled_look_actions are not LOOK moves, so disabling them would do "
+                f"nothing: {', '.join(unknown)}. The LOOK moves are "
+                + ", ".join(sorted(action.name for action in LOOK_ACTIONS))
+            )
         if self.max_decisions < 1:
             raise ValueError("max_decisions must be at least 1")
         if self.max_cost_usd <= 0:
             raise ValueError("max_cost_usd must be positive")
+        if self.max_scan_seconds <= 0:
+            raise ValueError("max_scan_seconds must be positive")
+        if self.max_run_seconds is not None and self.max_run_seconds <= 0:
+            raise ValueError("max_run_seconds must be positive when set")
 
         if self.enable_web_research and not self.organism.strip():
             raise ValueError(
@@ -376,6 +427,12 @@ class JevConfig:
                 "once before the first move rather than once per candidate, because a web "
                 "search inside a step made the loop wait tens of seconds for it"
             )
+        for name in ("off_limits", "disabled_look_actions"):
+            raw = values.get(name)
+            if isinstance(raw, (list, tuple)):
+                values[name] = tuple(str(item) for item in raw)
+            elif isinstance(raw, str):
+                values[name] = (raw,)
         raw_limits = values.get("off_limits")
         if isinstance(raw_limits, (list, tuple)):
             values["off_limits"] = tuple(str(name) for name in raw_limits)
@@ -410,6 +467,9 @@ class JevConfig:
             "growth_floor": self.growth_floor,
             "candidate_limit": self.candidate_limit,
             "allow_look_actions": self.allow_look_actions,
+            "disabled_look_actions": list(self.disabled_look_actions),
+            "max_scan_seconds": self.max_scan_seconds,
+            "max_run_seconds": self.max_run_seconds,
             "design_max_knockouts": self.design_max_knockouts,
             "design_max_solutions": self.design_max_solutions,
             "seed_with_strain_design": self.seed_with_strain_design,
@@ -467,6 +527,13 @@ class TickRecord:
     n_active_interventions: int = 0
     decision_cost_usd: float = 0.0
     decision_latency_s: float = 0.0
+    #: Wall clock for the whole step, against ``decision_latency_s`` for the part of it spent
+    #: waiting on the agent. The difference is CMM solving, and the two are worth telling apart
+    #: because which one dominates changes completely with the model: on ``e_coli_core`` a step
+    #: is mostly the agent, on a genome-scale model it is mostly the solver, and one LOOK move
+    #: can be hours on its own. Without this, finding that out meant attaching a sampler to a
+    #: running process.
+    elapsed_s: float = 0.0
     #: What the agent weighed at the second stage, and by how much. Kept for the same reason
     #: as the first stage's ranking: the runner-up is often the interesting row.
     action_ranking: tuple[tuple[str, float], ...] = ()
@@ -523,6 +590,8 @@ class TickRecord:
             "n_active_interventions": self.n_active_interventions,
             "decision_cost_usd": self.decision_cost_usd,
             "decision_latency_s": self.decision_latency_s,
+            "elapsed_s": round(self.elapsed_s, 3),
+            "solver_s": round(max(self.elapsed_s - self.decision_latency_s, 0.0), 3),
         }
 
     def headline(self) -> str:
@@ -798,6 +867,10 @@ class _Board:
     #: invisibly: a reaction that vanishes from the board with no explanation is a reaction the
     #: agent will waste steps looking for.
     round_bans: dict[str, str] = field(default_factory=dict)
+    #: LOOK moves that took longer than ``max_scan_seconds`` and are therefore not offered
+    #: again. Unlike ``scans.completed`` this survives everything: the reason it exists is that
+    #: the move is too expensive on *this* model, which no later design change alters.
+    overran_scans: set[str] = field(default_factory=set)
     #: Reactions the run definition put off limits. Unlike ``round_bans`` these never lift:
     #: the person running this said not to touch them, and that is not the agent's call.
     forbidden: frozenset[str] = frozenset()
@@ -1104,6 +1177,7 @@ def run_jev_design(
     flux_frames: list[Mapping[str, float]] = [dict(wild_type.fluxes)]
     transcript: list[Mapping[str, object]] = []
 
+    run_started = time.perf_counter()
     idle_rounds = 0
     stopped_by_user = False
     best_product = wild_product
@@ -1141,6 +1215,19 @@ def run_jev_design(
         repeats = 0
 
         for tick_index in range(1, config.steps_per_round + 1):
+            if (
+                config.max_run_seconds is not None
+                and time.perf_counter() - run_started > config.max_run_seconds
+            ):
+                notes.append(
+                    f"{STOP_OUT_OF_TIME} of {config.max_run_seconds:.0f}s during round "
+                    f"{round_index}, step {tick_index}; everything played up to that point is "
+                    "kept and scored, and the design reported is what the run had reached "
+                    "rather than what it would have reached"
+                )
+                stopped_by_user = True
+                stop_run = True
+                break
             if should_stop is not None and should_stop():
                 notes.append(
                     f"{STOP_REQUESTED} during round {round_index}, step {tick_index}; "
@@ -1158,6 +1245,7 @@ def run_jev_design(
                 break
 
             ticks_this_round += 1
+            tick_started = time.perf_counter()
             solution = _solve(board.model)
             if solution.status != "optimal":
                 # Every move that breaks feasibility is reverted as it happens, so reaching
@@ -1331,6 +1419,7 @@ def run_jev_design(
                 stop_run = True
                 stopped_by_user = True
                 break
+            tick = replace(tick, elapsed_s=time.perf_counter() - tick_started)
             # The tick measured its own guarantee when it changed the design, so the verdict
             # the agent reads and the number the run ranks on are one measurement, not two.
             if (
@@ -1838,6 +1927,8 @@ def _play_tick(
     # against the current bounds. Both would spend a tick to arrive back where we are.
     blocked = set(board.failed_moves.get(candidate.reaction_id, ()))
     blocked |= board.scans.completed
+    blocked |= set(config.disabled_look_actions)
+    blocked |= board.overran_scans
     offered = available_actions(
         candidate,
         allow_look=allow_look,
@@ -1921,7 +2012,19 @@ def _play_tick(
         )
         elapsed = time.perf_counter() - started
         reason = f"{reason} [{elapsed:.1f}s]"
-        if elapsed > _SLOW_SCAN_SECONDS:
+        if elapsed > config.max_scan_seconds:
+            board.overran_scans.add(action.name)
+            board.notes.append(
+                f"{action.name} took {elapsed:.0f}s on this model, over the "
+                f"{config.max_scan_seconds:.0f}s scan budget, and was withheld for the rest "
+                "of the run. The analysis behind a look costs what it costs and cannot be "
+                "interrupted once it has started, so it is paid for once and not again."
+            )
+            board.state_notes.append(
+                f"{action.name} took {elapsed / 60:.1f} minutes on this model and is no "
+                "longer available. The other looks are unaffected."
+            )
+        elif elapsed > _SLOW_SCAN_SECONDS:
             board.state_notes.append(
                 f"{action.name} took {elapsed / 60:.0f} minutes on this model. It is a real "
                 "CMM analysis and it costs what it costs; spend another look only if the "

@@ -534,6 +534,18 @@ is an ordinary CMM solve. What is validated is the loop, not the agent:
   coefficient times flux carried. With it and `candidate_limit: 32` the D-lactate runs go from
   no design in 10 of 10 to 17.9200 and 19.1199 in two of two, and the succinate configuration
   improves from 9.945652 to 9.948666 in 10 of 10.
+- **A LOOK move is priced, bounded, and refusable.** The LOOK vocabulary was designed on
+  `e_coli_core`, where every scan is sub-second. On `iJO1366`: `fseof_scan` 1.0 s,
+  `envelope_probe` 0.2 s, `strain_design_scan` about 2.3 hours, `state_distance_check` — ROOM, a
+  MILP over 2583 binaries — not returned after 25 minutes. Every look is timed and its elapsed
+  time lands in its `reason`; `disabled_look_actions` refuses named looks up front and records
+  the choice in provenance; `max_scan_seconds` withholds a kind that overran, so it is paid for
+  once rather than each time it is asked for; and a permanent scan is no longer un-run by an
+  undo, which is what let one run call the strain designer twice for 4.6 hours and no design.
+- **A run can be bounded by the clock.** `max_run_seconds` stops the run and reports what it
+  reached, the same answer the interface's stop button gives. It is checked between steps, so a
+  single runaway step still overruns it. `02_game/ticks.csv` carries `elapsed_s` and `solver_s`
+  per step to make that diagnosable from the bundle rather than from a live process.
 - **The comparison carries the control that isolates what the agent's judgement added, at the
   depth the agent plays.** The control takes the same proven design the agent was seeded with
   and searches the same `knockdown_50` vocabulary on top of it, under the same growth floor,

@@ -182,6 +182,28 @@ without saying so.
 The rest is honest cost. `screen_interventions` is 6 s of the 9.5, and turning it off or
 shrinking `steps_per_round` changes what the agent sees, so say which you used.
 
+**Two looks are unaffordable on this model and this config refuses them.** Measured here:
+`fseof_scan` 1.0 s, `envelope_probe` 0.2 s, `strain_design_scan` about 2.3 hours, and
+`state_distance_check` — which runs ROOM, a MILP over 2583 binaries — had not returned after
+25 minutes. All five are sub-second on `e_coli_core`, which is the model the LOOK vocabulary was
+designed against. `disabled_look_actions` names the two, which is also the honest setting when
+`seed_with_strain_design` is off: calling the designer through a look is seeding by another
+route. `max_scan_seconds` is the backstop for a model nobody has measured yet — a look that
+overruns it is withheld for the rest of the run, so it is paid for once rather than every time
+the agent asks.
+
+**And `max_run_seconds` bounds the run.** Ten replicates of this config ran 10 minutes, 4.8
+hours, and longer again on identical settings, because the paths differ; a study cannot be
+planned against that. Stopping on the clock is the same answer the stop button gives — keep what
+was played, score it, say so.
+
+*It is checked between steps, not inside one.* A single step that runs away still overruns it,
+and one has been seen to: with both expensive looks disabled, a step still ran more than 20
+minutes on 24 cores. That cause is not identified — it is not the design getting deeper (flat,
+above), not either disabled look, and not the loopless guarantee, which is 0.4 s on every design
+these runs ended on. `02_game/ticks.csv` now carries `elapsed_s` and `solver_s` per step, so the
+next completed run says where it went instead of needing a sampler attached to a live process.
+
 ## The key
 
 The agent needs `OPENROUTER_API_KEY`; nothing else in CMM does. Either export it for one shell,

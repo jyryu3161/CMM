@@ -43,5 +43,11 @@
   "max_decisions": 600,
   "max_cost_usd": 2.0,
   "seed": 0,
-  "overwrite": true
+  "overwrite": true,
+  "disabled_look_actions": [
+    "strain_design_scan",
+    "state_distance_check"
+  ],
+  "max_scan_seconds": 120.0,
+  "max_run_seconds": 1800
 }

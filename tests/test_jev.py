@@ -3673,3 +3673,125 @@ def test_the_expensive_scan_is_not_forgotten_by_an_undo(anaerobic_core_path) -> 
     assert len(scans) == 1, [t.headline() for t in result.ticks]
     # And its cost is on the record, because it is the one move that can dominate a run.
     assert "s]" in scans[0].reason
+
+
+def test_a_run_can_refuse_one_look_without_giving_up_the_others(
+    anaerobic_core_path,
+) -> None:
+    """``allow_look_actions`` is all-or-nothing and the LOOK vocabulary is not.
+
+    Every scan is sub-second on ``e_coli_core``. On ``iJO1366`` ``strain_design_scan`` is
+    OptKnock *and* RobustKnock over 2583 reactions and took about 2.3 hours a call, so a run
+    that does not want to spend that should not have to give up the cheap looks too. Refusing
+    it is also the honest setting when the designer is not seeding the board, because calling
+    it through a look is seeding by another route.
+    """
+
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        condition=ANAEROBIC,
+        rounds=1,
+        steps_per_round=4,
+        growth_floor=0.01,
+        run_moma=False,
+        run_baseline_comparison=False,
+        seed_with_strain_design=False,
+        screen_interventions=False,
+        disabled_look_actions=("strain_design_scan",),
+    )
+    client = ScriptedClient(
+        [
+            ("PFL", "strain_design_scan"),
+            ("PFL", "fseof_scan"),
+            ("end_round", None),
+        ]
+    )
+    result = run_jev_design(config, client=client)
+
+    actions = [tick.action for tick in result.ticks]
+    assert "strain_design_scan" not in actions, actions
+    # The cheap look is still on offer, so this is not `allow_look_actions=False` by the back
+    # door: asked for the disabled one, the agent is simply never given it as a criterion.
+    offered = {
+        name
+        for asked in client.asked
+        for question in asked.values()
+        for name in question["criteria"]
+    }
+    assert "strain_design_scan" not in offered
+    assert "fseof_scan" in offered
+    assert result.provenance["disabled_look_actions"] == ["strain_design_scan"]
+
+
+def test_a_look_that_busts_its_budget_is_paid_for_once(anaerobic_core_path) -> None:
+    """A scan cannot be interrupted, so the run stops offering the kind that overran.
+
+    The LOOK vocabulary was designed on ``e_coli_core``, where every scan is sub-second. On
+    ``iJO1366`` ``strain_design_scan`` is about 2.3 hours and ``state_distance_check`` runs
+    ROOM, a MILP over 2583 binaries, which had not returned after 25 minutes. Neither can be
+    cut short once gurobi is inside it, so the only thing a budget can do is make sure the run
+    pays that price once rather than every time the agent asks.
+    """
+
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        condition=ANAEROBIC,
+        rounds=1,
+        steps_per_round=6,
+        growth_floor=0.01,
+        run_moma=False,
+        run_baseline_comparison=False,
+        seed_with_strain_design=False,
+        screen_interventions=False,
+        # Small enough that any real scan overruns it on any model.
+        max_scan_seconds=1e-6,
+    )
+    result = run_jev_design(
+        config,
+        client=ScriptedClient(
+            [
+                ("PFL", "fseof_scan"),
+                ("PFL", "fseof_scan"),
+                ("end_round", None),
+            ]
+        ),
+    )
+    scans = [tick for tick in result.ticks if tick.action == "fseof_scan"]
+    assert len(scans) == 1, [tick.headline() for tick in result.ticks]
+    assert any("scan budget" in note for note in result.notes), result.notes
+    assert result.provenance["max_scan_seconds"] == 1e-6
+
+
+def test_a_run_can_be_bounded_by_the_clock(anaerobic_core_path) -> None:
+    """Wall clock is the budget genome scale actually needs, and it was the one missing.
+
+    ``max_decisions`` and ``max_cost_usd`` bound what the service costs, which is the whole
+    story on a small model. On ``iJO1366`` a step is mostly CMM solving, and how long a run
+    takes depends on what the agent chooses to look at: ten replicates of one D-lactate config
+    ran 10 minutes, 4.8 hours, and longer again on identical settings. Stopping on the clock is
+    the same answer the interface's stop button gives — keep what was played, score it, and say
+    so.
+    """
+
+    config = JevConfig(
+        model_path=anaerobic_core_path,
+        product="EX_succ_e",
+        condition=ANAEROBIC,
+        rounds=5,
+        steps_per_round=40,
+        growth_floor=0.01,
+        run_moma=False,
+        run_baseline_comparison=False,
+        seed_with_strain_design=False,
+        screen_interventions=False,
+        # Any real step overruns this, so the run stops after the first one.
+        max_run_seconds=1e-6,
+    )
+    result = run_jev_design(config, client=ScriptedClient([("PFL", "knockout")] * 50))
+    assert len(result.ticks) <= 1, [tick.headline() for tick in result.ticks]
+    assert any("wall-clock limit" in note for note in result.notes), result.notes
+    assert result.provenance["max_run_seconds"] == 1e-6
+    # Stopping is an answer about how long to look, not a reason to throw the answer away.
+    assert result.wild_type_product_flux == pytest.approx(0.0, abs=1e-6)
