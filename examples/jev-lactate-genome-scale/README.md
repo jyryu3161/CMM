@@ -101,29 +101,42 @@ nine distinct reactions touched across all ten runs out of 2123. Two causes, bot
    `cofactor_limitation` was reporting ATP as limiting by +3.0 on every tick. There is a
    cofactor slate now, and this example sets `candidate_limit: 32`.
 
-**Second attempt — it beats everything deterministic here.** Two runs so far:
+**Second attempt — it beats everything deterministic here, in nine runs out of nine that
+finished.** Ten replicates through `evals/jev_replicates.py`:
 
 | method | guaranteed D-lactate | edits | growth | cost |
 |---|---:|---:|---:|---|
 | OptKnock, 3 knockouts | 0.0000 | 3 | 0.050 | 2773 s |
 | exhaustive **pair** sweep | 17.5858 | 2 | 0.1625 | ~350 s per anchor |
-| **agent, run 1** | **17.9200** | 8 | 0.1340 | 56 steps, $0.075, 588 s |
-| **agent, run 2** | **19.1199** | 6 | 0.0592 | 86 steps, $0.111, 4.8 h |
+| **agent**, median of 9 | **17.9200** | 8 | 0.1340 | ~570 s, $0.077 |
+| **agent**, best of 9 | **19.1361** | 6 | 0.0581 | 546 s, $0.070 |
 
-Read at one growth rate the gap is not a trade: held at run 1's 0.1340 the agent's design
-guarantees 17.93 against the pair's 7.72; held at run 2's 0.0592 it guarantees 19.12 against
-the pair's 0.0000. Both designs were re-scored independently of the run that produced them.
+| outcome | runs |
+|---|---:|
+| 17.9200 | 6 |
+| 18.0150 | 1 |
+| 19.1199 | 1 |
+| 19.1361 | 1 |
+| timed out at 1200 s | 1 |
 
-Neither is the pair. Run 2's design is `ACALD`, `GLUDy`, `GLCptspp`, `ATPS4rpp`, `ALCD2x`,
-`PPK` — and half of those are reactions only the cofactor slate can put on a board.
+**9 of 9 completions exceeded 17.5858**, the best design an exhaustive pair search can find. Six
+distinct designs, $0.70 for the study. Read at one growth rate the gap is not a trade: held at
+the best run's 0.0581 its design guarantees 19.14 where the pair guarantees 0.0000. Every design
+quoted here was re-scored independently of the run that produced it.
+
+None of them is the pair. The best is `ALCD2x`, `GLUDy`, `ATPS4rpp`, `GLCptspp`, `PPK`, `FADRx`
+— four of those six are reactions only the cofactor slate can put on a board.
 
 **What this is evidence of, and what it is not.** The exhaustive search that found 17.5858 was
 over *pairs*, because pairs are where exhaustive search stops being affordable — 496 of them on
 the reduced board here, 3.2 million over the whole model. A six- or eight-edit design was never
 in its space. So this is not "the agent beat exhaustive search"; it is **the agent returning a
 better design at a depth exhaustive search cannot reach**, which is the only place judgement
-could have paid. It is also **n = 2**. The ten-run study was stopped after two because run 2
-alone took 4.8 hours; see *What it costs*.
+could have paid. It is ten runs of one configuration on one product and one model, and it says
+nothing about the next one.
+
+**One run in ten hung** and was recorded as a timeout rather than being allowed to stall the
+study. See *What it costs*.
 
 ## What to read afterwards
 
@@ -197,12 +210,17 @@ hours, and longer again on identical settings, because the paths differ; a study
 planned against that. Stopping on the clock is the same answer the stop button gives — keep what
 was played, score it, say so.
 
-*It is checked between steps, not inside one.* A single step that runs away still overruns it,
-and one has been seen to: with both expensive looks disabled, a step still ran more than 20
-minutes on 24 cores. That cause is not identified — it is not the design getting deeper (flat,
-above), not either disabled look, and not the loopless guarantee, which is 0.4 s on every design
-these runs ended on. `02_game/ticks.csv` now carries `elapsed_s` and `solver_s` per step, so the
-next completed run says where it went instead of needing a sampler attached to a live process.
+*It is checked between steps, not inside one*, so a single runaway step overruns it — and about
+one run in ten does exactly that. It is not the design getting deeper (flat, above), not either
+disabled look, not the loopless guarantee (0.43 s worst over 40 random designs) and not MOMA-L2
+(2.6 s worst over the same). It remains unidentified, and rare enough that six traced runs in a
+row completed cleanly without reproducing it.
+
+So `evals/jev_replicates.py` runs each replicate in its own subprocess under `--timeout` and
+records a hang as a data point. That is what makes a ten-run study finishable while the cause is
+still open: run 4 of ten timed out at 1200 s and the other nine reported normally.
+`02_game/ticks.csv` carries `elapsed_s` and `solver_s` per step, so a completed run says where
+its time went without a sampler attached to a live process.
 
 ## The key
 

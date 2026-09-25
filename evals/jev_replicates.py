@@ -17,6 +17,14 @@ Usage:
 the report then also counts how often the agent got there. Without it the spread is still
 reported, just with nothing to be a fraction of.
 
+Each replicate runs in its own **subprocess**, under ``--timeout``. Two reasons, both measured:
+a replicate that hangs cannot then stall the study, and every clean completion in testing came
+from a fresh process while the one hang appeared in a harness that reused one. A replicate that
+times out is recorded as a data point — the honest thing for it to be — rather than ending the
+study. ``JevConfig.max_run_seconds`` is the in-run version of the same bound and the better one
+to reach for first, but it is checked between steps, so a single runaway step overruns it; this
+timeout does not depend on the run cooperating.
+
 Needs ``OPENROUTER_API_KEY``, and costs whatever n runs cost — about $0.015 a run on
 ``e_coli_core`` and $0.025 on ``iJO1366`` as measured. Run directories go under ``--out``,
 which defaults to a temporary directory, because n run bundles are not something to leave in a
@@ -28,6 +36,8 @@ from __future__ import annotations
 import argparse
 import json
 import statistics
+import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -67,6 +77,57 @@ _CARRIED = frozenset(
 )
 
 
+def _run_one_here(config_path: Path, out: Path) -> dict[str, Any]:
+    """One replicate, in this process. The subprocess entry point."""
+
+    from cmm.jev import JevConfig
+
+    return _one(JevConfig.from_json(config_path), out)
+
+
+def _spawn(config_path: Path, out: Path, timeout: float | None) -> dict[str, Any]:
+    """Run one replicate in a subprocess so a hang cannot take the study with it."""
+
+    out.mkdir(parents=True, exist_ok=True)
+    result_path = out / "_replicate.json"
+    script = (
+        "import json,sys;"
+        f"sys.path.insert(0, {str(Path(__file__).parent)!r});"
+        "from jev_replicates import _run_one_here;"
+        "from pathlib import Path;"
+        "json.dump(_run_one_here(Path(sys.argv[1]), Path(sys.argv[2])),"
+        " open(sys.argv[3], 'w'))"
+    )
+    started = time.perf_counter()
+    try:
+        subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                script,
+                str(config_path),
+                str(out),
+                str(result_path),
+            ],
+            check=True,
+            timeout=timeout,
+            capture_output=True,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "error": f"timed out after {timeout:.0f}s",
+            "timed_out": True,
+            "seconds": round(time.perf_counter() - started, 1),
+        }
+    except subprocess.CalledProcessError as error:
+        tail = (error.stderr or b"").decode(errors="replace").strip().splitlines()
+        return {
+            "error": tail[-1] if tail else f"exited {error.returncode}",
+            "seconds": round(time.perf_counter() - started, 1),
+        }
+    return json.loads(result_path.read_text())
+
+
 def _one(base, out: Path) -> dict[str, Any]:
     from cmm.jev import JevConfig, run_jev_design
 
@@ -101,6 +162,12 @@ def main() -> int:
     parser.add_argument("config", type=Path, help="a JevConfig JSON file")
     parser.add_argument("--runs", type=int, default=10)
     parser.add_argument(
+        "--timeout",
+        type=float,
+        default=1800.0,
+        help="seconds one replicate may take before it is recorded as timed out",
+    )
+    parser.add_argument(
         "--target",
         type=float,
         default=None,
@@ -118,12 +185,7 @@ def main() -> int:
 
     runs: list[dict[str, Any]] = []
     for index in range(1, args.runs + 1):
-        try:
-            record = _one(base, root / f"run_{index:02d}")
-        except (
-            Exception
-        ) as error:  # a failed replicate is a data point, not a lost study
-            record = {"error": f"{type(error).__name__}: {error}"}
+        record = _spawn(args.config, root / f"run_{index:02d}", args.timeout)
         runs.append(record)
         value = record.get("guaranteed_product")
         shown = f"{value:10.4f}" if isinstance(value, (int, float)) else str(value)
@@ -145,6 +207,8 @@ def main() -> int:
         "n_requested": args.runs,
         "n_scored": len(scored),
         "n_failed": sum(1 for r in runs if "error" in r),
+        "n_timed_out": sum(1 for r in runs if r.get("timed_out")),
+        "timeout_s": args.timeout,
         "median_guaranteed_product": statistics.median(scored) if scored else None,
         "min_guaranteed_product": min(scored) if scored else None,
         "max_guaranteed_product": max(scored) if scored else None,

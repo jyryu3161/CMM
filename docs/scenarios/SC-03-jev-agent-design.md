@@ -618,9 +618,11 @@ is not evidence that it will on yours. Run the comparison; it is on by default.
 - **It is not reproducible in the agent's choices, and the spread is measured.** The CMM solves
   are deterministic; JEV's answers are not guaranteed to repeat. Ten runs each of two
   configurations, through `evals/jev_replicates.py`: succinate on `e_coli_core` reached
-  9.948666 in **10 of 10**, one distinct design, 40 to 44 steps; D-lactate on `iJO1366` on the
-  board as it was before the cofactor slate returned **no design in 10 of 10**, and on the fixed
-  board reached 17.9200 and 19.1199 in the only two runs made, which is not a distribution. Both outcomes are
+  9.948666 in **10 of 10**, one distinct design, 40 to 44 steps. D-lactate on `iJO1366` returned
+  **no design in 10 of 10** on the board as it was before the cofactor slate, and on the current
+  board **9 of 10 finished and all 9 exceeded 17.5858** — the best an exhaustive pair search
+  finds — with a median of 17.9200, a best of 19.1361 and six distinct designs for $0.70. The
+  tenth hung and is recorded as a timeout. Both outcomes are
   degenerate and opposite, so what varies between runs is the path and not the conclusion. An
   earlier build, before designs were ranked on the guarantee and before the designer seeded the
   board, did produce designs differing several-fold on the first of those; that is no longer

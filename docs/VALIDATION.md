@@ -610,15 +610,16 @@ solve in a run is deterministic. JEV's decisions are not, so the run's *path* va
 the two configurations measured with `evals/jev_replicates.py`, ten runs each, the *outcome*
 did not:
 
-| configuration | outcome over ten runs | distinct designs | ticks | cost |
-|---|---|---:|---:|---:|
-| succinate, `e_coli_core`, seeded | **10/10** at 9.948666 | 1 | 40–44 | $0.151 |
-| D-lactate, `iJO1366`, unseeded — *old board* | **0/10**, no design at all | 1 (empty) | 20–26 | $0.245 |
+| configuration | outcome over ten runs | distinct designs | cost |
+|---|---|---:|---:|
+| succinate, `e_coli_core`, seeded | **10/10** at 9.948666 | 1 | $0.151 |
+| D-lactate, `iJO1366` — *board before the cofactor slate* | **0/10**, no design at all | 1 (empty) | $0.245 |
+| D-lactate, `iJO1366` — current board | **9/10 finished, 9/9 above 17.5858**; median 17.9200, best 19.1361 | 6 | $0.695 |
 
-Both distributions are degenerate: the outcome repeats exactly while the path does not. The
-D-lactate row is kept because it is what the board looked like before the cofactor slate; on the
-fixed board only two runs exist, reaching 17.9200 and 19.1199, which is not a distribution and
-is not quoted as one.
+The succinate outcome repeats exactly while the path does not. D-lactate went from returning
+nothing in ten runs of ten to beating, in every run that finished, the best design an exhaustive
+pair search can find — 17.5858 — which is what the cofactor slate bought. One run in ten hung
+and is recorded as a timeout rather than dropped.
 
 That is **two configurations, ten runs each**, and it is not a general claim about the method.
 An earlier build, before designs were ranked on the guarantee and before the strain designer
