@@ -5,11 +5,12 @@ against the shipped `e_coli_core` textbook model so you can follow along end to 
 step below was exercised in offscreen mode and produces the screenshots referenced under
 `temp_figures_new/`.
 
-> **Scope note.** The GUI now covers every advertised method — simulation, production design,
+> **Scope note.** The GUI covers simulation, production design,
 > **strain design (OptKnock/RobustKnock)**, omics, **multi-condition comparison**,
-> perturbation response, revert-metabolism, the **A→B transformation finder**, and flux maps —
+> perturbation response, revert-metabolism, and flux maps —
 > and can **export result tables to CSV and save figures** (File menu + the figure toolbar).
-> The Python API (§10) exposes the same services for scripting.
+> The Python API (§10) exposes the same services for scripting, plus `transformation_targets`
+> (A→B state transformation), which is available only from Python.
 
 ---
 
@@ -93,7 +94,7 @@ the active capabilities under **Config → Solver status…**.
 │ MODEL PANEL         │ TABS                                                   │
 │ - objective         │ Simulation | Comparison | Production | Strain Des.     │
 │ - flux-range slider │ Omics | Multi-condition | Flux Map |                   │
-│ - reaction table    │ Revert Metabolism | Transform (A→B)                    │
+│ - reaction table    │ Revert Metabolism                                      │
 │  (edit Lower/Upper) │   (active analysis + result table / figure)            │
 ├─────────────────────┴────────────────────────────────────────────────────────┤
 │ status bar                                                                   │
@@ -358,20 +359,6 @@ sampling for source-state preprocessing; the deterministic E-Flux2 GUI variant m
 disclosed in a manuscript (see `docs/design-revert-metabolism.md`).
 
 ---
-
-## 8b. Transform (A→B) tab — knockouts that move state A toward state B
-
-A generalization of Revert Metabolism: instead of a differential-expression *direction*, it
-works from two explicit predicted flux **states**.
-
-1. **Load source (A)** and **target (B)** expression CSV/TSV files (two-column gene/expression,
-   as in §6).
-2. Choose **Predict states with** (`eflux2` / `lad`) — each expression vector becomes a flux
-   state — a **Method** (`moma` = rank by how far the minimal-adjustment state moves toward B;
-   `mta` = the published single MTA MIQP on the A→B direction), the **Knockout level**, and α
-   (for `mta`).
-3. **Run transformation.** Knockouts are ranked (best highlighted) by how well they move A
-   toward B. `moma` needs QP; `mta` needs MIQP.
 
 ## 9. Flux Map tab — Escher-layout flux maps
 

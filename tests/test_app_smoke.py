@@ -613,25 +613,6 @@ def test_strain_design_tab_present_and_disabled_without_exchanges(app):
     assert not window2.sd_run_btn.isEnabled()
 
 
-@pytest.mark.requires_qp
-def test_transformation_tab_runs(app):
-    window = CmmMainWindow(build_demo_model())
-    assert window._tab_index("Transform (A→B)") is not None
-    assert not window.transform_run_btn.isEnabled()
-
-    window._transform_source_expression = dict(SOURCE_EXPRESSION)
-    window._transform_target_expression = dict(TARGET_EXPRESSION)
-    window._update_transform_run_state()
-    assert window.transform_run_btn.isEnabled()
-
-    window.transform_method_combo.setCurrentText("moma")
-    window.transform_omics_combo.setCurrentText("eflux2")
-    window.run_transformation()
-    # Every gene is a candidate knockout; the ranking table is populated and summarized.
-    assert window.transform_table.rowCount() > 0
-    assert "A→B target" in window.transform_summary.text()
-
-
 def test_omics_multi_condition_in_gui(app, tmp_path):
     from cmm.omics.conditions import read_expression_table
 
@@ -1036,7 +1017,6 @@ def test_tab_order_groups_related_analyses(app, ecoli_core):
         "Omics",
         "Flux Map",
         "Revert Metabolism",
-        "Transform (A→B)",
     ]
     # Each new tab sits beside the analysis asking a similar question.
     assert names.index("Sampling") == names.index("Simulation") + 1
