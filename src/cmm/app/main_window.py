@@ -88,7 +88,6 @@ from cmm.features.sampling import (
     reference_constrained_sampling,
 )
 from cmm.features.strain_design import optknock, robustknock
-from cmm.features.transformation import transformation_targets
 from cmm.omics.conditions import (
     predict_condition_fluxes,
     read_expression_table,
@@ -505,9 +504,6 @@ class CmmMainWindow(QMainWindow):
         self._production_result: tuple[str, object] | None = None
         # Keep hover-cursor event filters alive for combos that grey out entries.
         self._cursor_filters: list[_DisabledHoverCursor] = []
-        # A→B transformation finder: two expression vectors → two predicted flux states.
-        self._transform_source_expression: dict[str, float] | None = None
-        self._transform_target_expression: dict[str, float] | None = None
         # Omics integration source: a gene × condition expression table (1+ conditions).
         # Loading only stores it; Compute predicts a flux column per selected condition.
         self._omics_table_df = None
@@ -594,9 +590,6 @@ class CmmMainWindow(QMainWindow):
         )
         analysis.addAction(
             "Revert Metabolism…", lambda: self._goto_tab("Revert Metabolism")
-        )
-        analysis.addAction(
-            "Transformation Targets (A→B)…", lambda: self._goto_tab("Transform (A→B)")
         )
         analysis.addSeparator()
         analysis.addAction(
@@ -846,8 +839,6 @@ class CmmMainWindow(QMainWindow):
         self._refresh_comparison_templates()  # disable LAD/E-Flux2 until recomputed
         self._revert_source_expression = None
         self._revert_target_expression = None
-        self._transform_source_expression = None
-        self._transform_target_expression = None
         self._omics_table_df = None
         self._omics_fluxes_by_condition = None
         self.omics_map_btn.setEnabled(False)
@@ -857,15 +848,11 @@ class CmmMainWindow(QMainWindow):
         self._omics_conditions_order = []
         self.revert_source_label.setText("not loaded")
         self.revert_target_label.setText("not loaded")
-        self.transform_source_label.setText("not loaded")
-        self.transform_target_label.setText("not loaded")
         self.omics_file_label.setText("no file loaded")
         self.omics_compute_btn.setEnabled(False)
         self.omics_cond_list.clear()
         self.omics_table.setRowCount(0)
-        self.transform_table.setRowCount(0)
         self._update_revert_run_state()
-        self._update_transform_run_state()
         self.load_model(model)
         self.status_label.setText(f"Loaded model '{model.id}' from {path}.")
 
@@ -882,7 +869,6 @@ class CmmMainWindow(QMainWindow):
             "Sampling": self.sample_table,
             "Omics": self.omics_table,
             "Revert Metabolism": self.revert_table,
-            "Transform (A→B)": self.transform_table,
         }.get(name)
 
     def _active_figure(self):
@@ -1032,7 +1018,6 @@ class CmmMainWindow(QMainWindow):
         self.tabs.addTab(self._build_omics_tab(), "Omics")
         self.tabs.addTab(self._build_fluxmap_tab(), "Flux Map")
         self.tabs.addTab(self._build_revert_tab(), "Revert Metabolism")
-        self.tabs.addTab(self._build_transformation_tab(), "Transform (A→B)")
         return self.tabs
 
     def _build_omics_tab(self) -> QWidget:
@@ -4588,181 +4573,3 @@ class CmmMainWindow(QMainWindow):
         else:
             self.revert_summary.setText(f"No target was scored. {evidence}")
         self.status_label.setText(f"Revert prediction complete ({method}).")
-
-    # -- transformation finder (A -> B) -------------------------------------
-
-    def _build_transformation_tab(self) -> QWidget:
-        """Rank knockouts that move a source flux state toward a target flux state (A→B)."""
-
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-
-        controls = QGroupBox("Transformation targets (move source → target flux state)")
-        form = QFormLayout(controls)
-        self.transform_method_combo = QComboBox()
-        self.transform_method_combo.addItems(["moma", "mta"])
-        self.transform_method_combo.setToolTip(
-            "moma: rank by how much the minimal-adjustment state moves toward the target. "
-            "mta: published single MTA MIQP on the source→target direction."
-        )
-        self.transform_omics_combo = QComboBox()
-        self.transform_omics_combo.addItems(["eflux2", "lad"])
-        self.transform_omics_combo.setToolTip(
-            "How each expression vector is turned into a flux state"
-        )
-        self.transform_perturbation_combo = QComboBox()
-        self.transform_perturbation_combo.addItems(["gene", "reaction"])
-        self.transform_alpha_spin = QDoubleSpinBox()
-        self.transform_alpha_spin.setRange(0.0, 1.0)
-        self.transform_alpha_spin.setSingleStep(0.01)
-        self.transform_alpha_spin.setValue(0.66)
-        form.addRow("Method:", self.transform_method_combo)
-        form.addRow("Predict states with:", self.transform_omics_combo)
-        form.addRow("Knockout level:", self.transform_perturbation_combo)
-        form.addRow("Transformation weight α (mta):", self.transform_alpha_spin)
-
-        source_row = QHBoxLayout()
-        source_btn = QPushButton("Load source (A) CSV/TSV…")
-        source_btn.clicked.connect(lambda: self.load_transform_expression("source"))
-        self.transform_source_label = QLabel("not loaded")
-        source_row.addWidget(source_btn)
-        source_row.addWidget(self.transform_source_label, 1)
-        form.addRow("Source expression:", source_row)
-
-        target_row = QHBoxLayout()
-        target_btn = QPushButton("Load target (B) CSV/TSV…")
-        target_btn.clicked.connect(lambda: self.load_transform_expression("target"))
-        self.transform_target_label = QLabel("not loaded")
-        target_row.addWidget(target_btn)
-        target_row.addWidget(self.transform_target_label, 1)
-        form.addRow("Target expression:", target_row)
-
-        self.transform_run_btn = QPushButton("Run transformation")
-        self.transform_run_btn.setEnabled(False)
-        self.transform_run_btn.clicked.connect(self.run_transformation)
-        self.transform_run_btn.setToolTip(
-            "Load both source and target expression files to enable."
-        )
-        form.addRow("", self.transform_run_btn)
-        layout.addWidget(controls)
-
-        self.transform_summary = QLabel(
-            "Load source (A) and target (B) expression files; each is predicted to a flux "
-            "state, then knockouts are ranked by how well they move A toward B."
-        )
-        self.transform_summary.setWordWrap(True)
-        layout.addWidget(self.transform_summary)
-
-        self.transform_table = QTableWidget(0, 3)
-        self.transform_table.setHorizontalHeaderLabels(["Rank", "Target", "Score"])
-        self.transform_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.Stretch
-        )
-        self.transform_table.verticalHeader().setVisible(False)
-        self.transform_table.setAlternatingRowColors(True)
-        layout.addWidget(self.transform_table, 1)
-        return tab
-
-    def _update_transform_run_state(self) -> None:
-        ready = (
-            self._transform_source_expression is not None
-            and self._transform_target_expression is not None
-        )
-        self.transform_run_btn.setEnabled(ready)
-
-    def load_transform_expression(self, role: str) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            f"Load {role} expression",
-            "",
-            "CSV/TSV files (*.csv *.tsv);;All files (*)",
-        )
-        if not path:
-            return
-        try:
-            expression = _read_expression_vector(path)
-        except Exception as exc:
-            self.transform_summary.setText(
-                f"Could not read {html.escape(role)} expression: {html.escape(str(exc))}"
-            )
-            return
-        import os
-
-        name = os.path.basename(path)
-        if role == "source":
-            self._transform_source_expression = expression
-            self.transform_source_label.setText(f"{name} ({len(expression)} genes)")
-        else:
-            self._transform_target_expression = expression
-            self.transform_target_label.setText(f"{name} ({len(expression)} genes)")
-        self._update_transform_run_state()
-        self.status_label.setText(
-            f"Loaded {role} (A→B) expression ({len(expression)} genes)."
-        )
-
-    def run_transformation(self) -> None:
-        if (
-            self._transform_source_expression is None
-            or self._transform_target_expression is None
-        ):
-            self.transform_summary.setText(
-                "Load both source (A) and target (B) expression files first."
-            )
-            return
-        method = self.transform_method_combo.currentText()
-        omics_method = self.transform_omics_combo.currentText()
-        perturbation = self.transform_perturbation_combo.currentText()
-        alpha = self.transform_alpha_spin.value()
-        source_expr = self._transform_source_expression
-        target_expr = self._transform_target_expression
-
-        def _compute(worker_model):
-            source_state = integrate_expression(
-                worker_model, source_expr, method=omics_method
-            ).to_flux_state("source")
-            target_state = integrate_expression(
-                worker_model, target_expr, method=omics_method
-            ).to_flux_state("target")
-            return transformation_targets(
-                worker_model,
-                source_state,
-                target_state,
-                method=method,
-                perturbation=perturbation,
-                alpha=alpha,
-            )
-
-        try:
-            ranking = self._run_model_in_background(
-                _compute, label=f"Running transformation ({method})…"
-            )
-        except (
-            Exception
-        ) as exc:  # surface solver-capability/model errors instead of freezing
-            self.transform_summary.setText(
-                f"Transformation failed: {html.escape(str(exc))}"
-            )
-            self.status_label.setText(f"Transformation failed ({method}).")
-            return
-        rows = ranking.to_records()
-        self.transform_table.setRowCount(len(rows))
-        for i, record in enumerate(rows):
-            self.transform_table.setItem(i, 0, QTableWidgetItem(str(record["rank"])))
-            self.transform_table.setItem(i, 1, QTableWidgetItem(record["target_id"]))
-            self.transform_table.setItem(
-                i, 2, QTableWidgetItem(f"{record['score']:.4g}")
-            )
-            if i == 0:
-                for col in range(3):
-                    self.transform_table.item(i, col).setBackground(QColor("#dce9d6"))
-        best = ranking.best()
-        if best is not None:
-            self.transform_summary.setText(
-                f"<b>Top A→B target: {html.escape(best.target_id)}</b> "
-                f"(score {best.score:.4g}, method {method}, {omics_method} states, "
-                f"{perturbation} knockout). Higher score = moves the source state more toward "
-                "the target."
-            )
-        else:
-            self.transform_summary.setText("No candidate knockouts scored.")
-        self.status_label.setText(f"Transformation complete ({method}).")
