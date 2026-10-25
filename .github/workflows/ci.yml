@@ -398,7 +398,9 @@ jobs:
               for line in milp_collection.read_text(encoding="utf-8").splitlines()
               if line.startswith("tests/") and "::" in line
           }
-          expected_marked_count = 73
+          # 73 -> 72: fc07016 removed the Transform (A→B) GUI tab together with its one
+          # requires_qp test (test_transformation_tab_runs); the service tests remain.
+          expected_marked_count = 72
           expected_milp = {
               "tests/test_strain_design.py::"
               "test_restricted_license_strain_design_forwards_seed"
