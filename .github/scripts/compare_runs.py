@@ -36,6 +36,13 @@ COMPARED = {
         "06_validation/moma_baseline.csv",
     ),
 }
+# Order-only columns left out of the comparison. The single-knockout display order sorts the
+# product/growth values exactly, so knockouts that change nothing (deltas of 0 vs -1.8e-15)
+# are ordered by rounding noise and differ by platform. The values that define the order are
+# still compared within tolerance, so a real change in them still fails.
+ORDER_ONLY_COLUMNS = {
+    "04_single_knockout/single_knockout_moma.csv": {"display_rank", "method_rank"},
+}
 REL_TOL = 1e-6
 ABS_TOL = 1e-6
 
@@ -90,11 +97,14 @@ def compare(reference: object, other: object, where: str, problems: list[str]) -
     return 0.0
 
 
-def load(path: Path) -> object:
+def load(path: Path, ignored: set[str]) -> object:
     if path.suffix == ".json":
         return json.loads(path.read_text(encoding="utf-8"))
     with path.open(encoding="utf-8", newline="") as handle:
-        return list(csv.DictReader(handle))
+        return [
+            {key: value for key, value in row.items() if key not in ignored}
+            for row in csv.DictReader(handle)
+        ]
 
 
 def main(workflow: str, directories: list[Path]) -> None:
@@ -107,10 +117,13 @@ def main(workflow: str, directories: list[Path]) -> None:
     reference, *others = directories
     problems: list[str] = []
     for name in COMPARED[workflow]:
+        ignored = ORDER_ONLY_COLUMNS.get(name, set())
+        if ignored:
+            print(f"{name}: order-only columns not compared: {sorted(ignored)}")
         for other in others:
             largest = compare(
-                load(reference / name),
-                load(other / name),
+                load(reference / name, ignored),
+                load(other / name, ignored),
                 f"{other.name}:{name}",
                 problems,
             )
