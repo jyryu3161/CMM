@@ -155,6 +155,9 @@ jobs:
               "examples/production-targets/README.md",
               "examples/production-targets/prepare.py",
               "examples/production-targets/config.json",
+              "examples/production-targets-small/README.md",
+              "examples/production-targets-small/prepare.py",
+              "examples/production-targets-small/config.json",
               "examples/transformation-targets/README.md",
               "examples/transformation-targets/prepare.py",
               "examples/transformation-targets/config.json",
@@ -518,9 +521,36 @@ jobs:
 
       # The commands a reader copies out of the README are not covered by the unit suite: a
       # change can keep every test green and still break the first thing a new user runs.
-      # Only SC-02 is exercised here. Its six-reaction model fits the restricted licence,
-      # whereas SC-01's L2 MOMA on e_coli_core is 286 variables and fails under it — see the
-      # solver-licence table in README.md. SC-01 needs a full licence to run end to end.
+      # SC-02's six-reaction model fits the restricted licence. SC-01's L2 MOMA on e_coli_core
+      # is 286 variables and fails under it — see the solver-licence table in README.md — so
+      # SC-01 runs here on its 26-reaction synthetic example; the e_coli_core example still
+      # needs a full licence.
+      - name: Run the documented small SC-01 example end to end
+        run: |
+          uv run --no-sync python examples/production-targets-small/prepare.py
+          uv run --no-sync cmm production-targets \
+            --config examples/production-targets-small/config.json
+          uv run --no-sync cmm report validate \
+            results/example-production-small --json
+          uv run --no-sync python evals/run_evals.py \
+            --task evals/tasks/sc01_production.json \
+            --run-dir results/example-production-small
+
+      - name: Upload SC-01 numerical results for the cross-platform comparison
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sc01-results-${{ matrix.os }}
+          path: |
+            results/example-production-small/00_summary.json
+            results/example-production-small/02_yield/theoretical_yield.csv
+            results/example-production-small/02_yield/production_envelope.csv
+            results/example-production-small/04_single_knockout/single_knockout_moma.csv
+            results/example-production-small/05_strain_design/optknock.csv
+            results/example-production-small/05_strain_design/robustknock.csv
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
       - name: Run the documented SC-02 example end to end
         run: |
           uv run --no-sync python examples/transformation-targets/prepare.py
@@ -789,8 +819,8 @@ jobs:
           overwrite: true
           retention-days: 1
 
-  sc02-consistency:
-    name: SC-02 results agree across operating systems
+  workflow-consistency:
+    name: SC-01 and SC-02 results agree across operating systems
     needs: solver-smoke
     runs-on: ubuntu-24.04
     steps:
@@ -798,18 +828,20 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Download every platform's SC-02 results
+      - name: Download every platform's SC-01 and SC-02 results
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: sc02-results-*
-          path: ${{ runner.temp }}/sc02
+          pattern: sc0*-results-*
+          path: ${{ runner.temp }}/results
 
       - name: Compare identifiers exactly and numbers within tolerance
-        run: >-
-          python3 .github/scripts/compare_runs.py
-          "$RUNNER_TEMP/sc02/sc02-results-ubuntu-24.04"
-          "$RUNNER_TEMP/sc02/sc02-results-windows-2025"
-          "$RUNNER_TEMP/sc02/sc02-results-macos-15"
+        run: |
+          for workflow in sc01 sc02; do
+            python3 .github/scripts/compare_runs.py "$workflow" \
+              "$RUNNER_TEMP/results/$workflow-results-ubuntu-24.04" \
+              "$RUNNER_TEMP/results/$workflow-results-windows-2025" \
+              "$RUNNER_TEMP/results/$workflow-results-macos-15"
+          done
 
   # The test job uses the locked `uv sync --frozen` development environment. This job instead
   # installs CMM the two ways a user does — the documented source installer and the built

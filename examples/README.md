@@ -6,6 +6,7 @@ installed. Both use the public CLI and write a validated, self-contained report 
 | Workflow | Runnable example | Output |
 |---|---|---|
 | SC-01 production-target discovery | [E. coli succinate](production-targets/README.md) | `results/example-production-succinate/` |
+| SC-01 production-target discovery, restricted licence | [Synthetic mixed-acid network](production-targets-small/README.md) | `results/example-production-small/` |
 | SC-02 transformation-target discovery | [MTA and rMTA on the existing synthetic model](transformation-targets/README.md) | `results/example-transformation-mta/`, `results/example-transformation-rmta/` |
 
 The small SC-02 model demonstrates execution and reporting. The historical Recon1 runtime
