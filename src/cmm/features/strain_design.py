@@ -14,12 +14,15 @@ from __future__ import annotations
 
 import contextlib
 import io
+import math
+import time
+import warnings
 from collections.abc import Iterable
 from dataclasses import dataclass
 from dataclasses import field
 from importlib.metadata import version as package_version
-from numbers import Integral
-from typing import Literal, cast
+from numbers import Integral, Real
+from typing import Literal, NamedTuple, cast
 
 from cobra import Model
 import pandas as pd
@@ -39,6 +42,31 @@ from cmm.features.production import (
 # conservative range for the solver-neutral API also remains valid for the other
 # straindesign backends while preventing a backend error after expensive preprocessing.
 STRAIN_DESIGN_SEED_MAX = 2_000_000_000
+
+# Wall-clock budget for one OptKnock/RobustKnock search.  straindesign takes no time limit
+# unless it is given one, and its default 'best' approach can re-solve one MILP forever (see
+# ``_search_designs``), so "no limit" is not a search that is merely slow.  Where the search
+# terminated, a 1,440-reaction model took 4-5 minutes.
+STRAIN_DESIGN_MAX_SECONDS = 3600.0
+
+# What straindesign reports when its own clock ended the search.
+_TIME_LIMIT_STATUSES = frozenset({"time_limit", "time_limit_w_sols"})
+
+
+def validate_max_seconds(value: object, name: str = "max_seconds") -> None:
+    """Accept ``None`` (no limit) or a positive, finite number of seconds."""
+
+    if value is None:
+        return
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, Real)
+        or not math.isfinite(value)
+        or value <= 0
+    ):
+        raise ValueError(
+            f"{name} must be a positive, finite number of seconds, or None for no limit"
+        )
 
 
 @dataclass(frozen=True)
@@ -148,6 +176,15 @@ def _evaluate_design(
     )
 
 
+class _SearchOutcome(NamedTuple):
+    ko_sets: list[tuple[str, ...]]
+    n_candidates: int
+    n_decompressed_designs: int
+    status: str
+    elapsed_s: float
+    time_limit_reached: bool
+
+
 def _search_designs(
     model: Model,
     product: str,
@@ -159,7 +196,8 @@ def _search_designs(
     min_growth: float,
     actionable_only: bool,
     seed: int,
-) -> tuple[list[tuple[str, ...]], int, int, str]:
+    max_seconds: float | None,
+) -> _SearchOutcome:
     try:
         import straindesign as sd
     except (
@@ -173,7 +211,7 @@ def _search_designs(
         model.objective = model.reactions.get_by_id(product)
         model.objective_direction = "max"
         if (model.slim_optimize() or 0.0) < 1e-6:
-            return [], 0, 0, "not_run_product_unreachable"
+            return _SearchOutcome([], 0, 0, "not_run_product_unreachable", 0.0, False)
 
     module_type = sd.OPTKNOCK if method == "optknock" else sd.ROBUSTKNOCK
     module = sd.SDModule(
@@ -197,6 +235,15 @@ def _search_designs(
         }
         n_candidates = len(candidates)
         search_kwargs["ko_cost"] = candidates
+    if max_seconds is not None:
+        # Without this a search whose MILP stalls never returns.  straindesign 1.18 finds the
+        # optimum, then solves a second MILP to minimise the interventions; when that one is
+        # not optimal (Gurobi: "Model is infeasible", right after "max constraint violation
+        # 4.75e-09 exceeds tolerance") the inner loop breaks without excluding the solution
+        # it just found, the outer loop solves the identical MILP again, and ``max_solutions``
+        # is never reached because nothing is ever added.  The limit is the only exit.
+        search_kwargs["time_limit"] = float(max_seconds)
+    started = time.monotonic()
     # straindesign is chatty; silence its solver logs.
     with (
         contextlib.redirect_stdout(io.StringIO()),
@@ -211,15 +258,33 @@ def _search_designs(
             seed=seed,
             **search_kwargs,
         )
+    elapsed_s = time.monotonic() - started
     reaction_sd = getattr(solutions, "reaction_sd", None) or []
     search_status = str(getattr(solutions, "status", "unknown"))
+    # straindesign checks the remaining time only before a solve and keeps the status of the
+    # last one, so the clock can end a search that still says 'optimal' - with no designs, or
+    # fewer than a finished search would have found.  The elapsed time is the only witness.
+    # It includes preprocessing, which straindesign's own clock does not, so a search that
+    # finished just inside its limit can be counted as cut; that error is the safe one.
+    time_limit_reached = search_status in _TIME_LIMIT_STATUSES or (
+        max_seconds is not None
+        and search_status == "optimal"
+        and elapsed_s >= max_seconds
+    )
     n_decompressed_designs = len(reaction_sd)
     designs: list[tuple[str, ...]] = []
     for design in reaction_sd:
         kos = tuple(sorted(rid for rid, coeff in design.items() if coeff <= 0))
         if kos and kos not in designs:
             designs.append(kos)
-    return designs, n_candidates, n_decompressed_designs, search_status
+    return _SearchOutcome(
+        designs,
+        n_candidates,
+        n_decompressed_designs,
+        search_status,
+        elapsed_s,
+        time_limit_reached,
+    )
 
 
 def _strain_design(
@@ -234,6 +299,7 @@ def _strain_design(
     condition: Condition | None,
     actionable_only: bool,
     seed: int,
+    max_seconds: float | None,
 ) -> StrainDesignResult:
     if max_knockouts < 1:
         raise ValueError("max_knockouts must be at least 1")
@@ -241,6 +307,7 @@ def _strain_design(
         raise ValueError("max_solutions must be at least 1")
     if min_growth < 0:
         raise ValueError("min_growth must be non-negative")
+    validate_max_seconds(max_seconds)
     if (
         isinstance(seed, bool)
         or not isinstance(seed, Integral)
@@ -265,11 +332,12 @@ def _strain_design(
         condition=condition.name if condition is not None else None,
         actionable_only=actionable_only,
         strain_design_seed=seed,
+        max_seconds=max_seconds,
     )
     with model:
         _apply_condition(model, condition=condition)
         _record_condition(provenance, _condition_provenance(model, condition))
-        ko_sets, n_candidates, n_decompressed_designs, search_status = _search_designs(
+        search = _search_designs(
             model,
             product,
             biomass,
@@ -279,12 +347,26 @@ def _strain_design(
             min_growth=min_growth,
             actionable_only=actionable_only,
             seed=seed,
+            max_seconds=max_seconds,
         )
         evaluated = [
             d
-            for d in (_evaluate_design(model, kos, product, biomass) for kos in ko_sets)
+            for d in (
+                _evaluate_design(model, kos, product, biomass) for kos in search.ko_sets
+            )
             if d is not None
         ]
+    if search.time_limit_reached:
+        limit = f"the {max_seconds:g} s time limit" if max_seconds else "a time limit"
+        warnings.warn(
+            f"{method}: straindesign was stopped by {limit} (backend status "
+            f"'{search.status}', {search.elapsed_s:.0f} s elapsed) after finding "
+            f"{len(search.ko_sets)} design(s); this is not a complete search. A search "
+            "that found none may be re-solving one MILP forever (straindesign 1.18) or "
+            "may only need a larger max_seconds.",
+            UserWarning,
+            stacklevel=3,
+        )
     n_evaluated_designs = len(evaluated)
     if method == "robustknock":
         evaluated = [d for d in evaluated if d.growth_coupled]
@@ -302,11 +384,15 @@ def _strain_design(
     deduplicated = _deduplicate_designs(evaluated)
     provenance["parameters"] = {
         **cast(dict[str, object], provenance["parameters"]),
-        "n_knockout_candidates": n_candidates,
+        "n_knockout_candidates": search.n_candidates,
         "strain_design_backend": "straindesign",
         "straindesign_version": package_version("straindesign"),
-        "straindesign_search_status": search_status,
-        "straindesign_search_complete": search_status == "optimal",
+        "straindesign_search_status": search.status,
+        "straindesign_search_elapsed_s": round(search.elapsed_s, 3),
+        "straindesign_time_limit_reached": search.time_limit_reached,
+        "straindesign_search_complete": (
+            search.status == "optimal" and not search.time_limit_reached
+        ),
         "straindesign_compress": True,
         "max_compressed_milp_solutions_requested": max_solutions,
         "max_solutions_semantics": (
@@ -317,8 +403,8 @@ def _strain_design(
         "n_compressed_milp_solutions_reason": (
             "straindesign does not expose the generated compressed-solution count"
         ),
-        "n_decompressed_designs": n_decompressed_designs,
-        "n_unique_decompressed_designs": len(ko_sets),
+        "n_decompressed_designs": search.n_decompressed_designs,
+        "n_unique_decompressed_designs": len(search.ko_sets),
         "n_evaluated_designs": n_evaluated_designs,
         "n_method_eligible_designs": len(evaluated),
         "n_returned_designs_after_deduplication": len(deduplicated),
@@ -371,6 +457,7 @@ def optknock(
     condition: Condition | None = None,
     actionable_only: bool = True,
     seed: int = 0,
+    max_seconds: float | None = STRAIN_DESIGN_MAX_SECONDS,
 ) -> StrainDesignResult:
     """OptKnock: knockout sets that maximize the product at maximum growth (optimistic).
 
@@ -393,6 +480,14 @@ def optknock(
     ``seed`` is forwarded explicitly to straindesign's MILP backend.  Keeping it fixed pins
     the solver's search perturbation for reproducible reruns on the same solver/platform;
     omitting it no longer lets straindesign invent a different seed on every call.
+
+    ``max_seconds`` is the wall-clock budget for the search (default one hour; ``None`` is
+    no limit).  straindesign takes none by itself, and a search whose MILP stalls then never
+    returns - a 1,440-reaction model sat in one for 24 hours.  When the budget ends the
+    search, the designs found so far are returned with a ``UserWarning``,
+    ``straindesign_time_limit_reached=True`` and ``straindesign_search_complete=False`` in
+    the provenance, and the production workflow reports the artifact as partial.  A search
+    cut at the limit is not a ranking: raise the budget or accept that the list is open.
     """
 
     return _strain_design(
@@ -406,6 +501,7 @@ def optknock(
         condition=condition,
         actionable_only=actionable_only,
         seed=seed,
+        max_seconds=max_seconds,
     )
 
 
@@ -420,11 +516,13 @@ def robustknock(
     condition: Condition | None = None,
     actionable_only: bool = True,
     seed: int = 0,
+    max_seconds: float | None = STRAIN_DESIGN_MAX_SECONDS,
 ) -> StrainDesignResult:
     """RobustKnock: maximize guaranteed product over all growth-maximal flux states.
 
-    ``condition``, ``max_solutions``, ``actionable_only`` and ``seed`` behave exactly as in
-    :func:`optknock`; in particular ``max_solutions`` caps MILP solutions, not designs.
+    ``condition``, ``max_solutions``, ``actionable_only``, ``seed`` and ``max_seconds``
+    behave exactly as in :func:`optknock`; in particular ``max_solutions`` caps MILP
+    solutions, not designs.
     """
 
     return _strain_design(
@@ -438,4 +536,5 @@ def robustknock(
         condition=condition,
         actionable_only=actionable_only,
         seed=seed,
+        max_seconds=max_seconds,
     )

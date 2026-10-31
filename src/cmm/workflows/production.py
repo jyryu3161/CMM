@@ -71,6 +71,7 @@ from cmm.features import (
     theoretical_yield,
 )
 from cmm.features._perturbation import apply_perturbation
+from cmm.features.strain_design import STRAIN_DESIGN_MAX_SECONDS, validate_max_seconds
 
 SCHEMA_ID = "cmm.production-target-discovery"
 SCHEMA_VERSION = 2
@@ -200,6 +201,7 @@ class ProductionWorkflowConfig:
     optknock_max_solutions: int = 5
     robustknock_max_solutions: int = 8
     strain_design_seed: int = 0
+    strain_design_max_seconds: float | None = STRAIN_DESIGN_MAX_SECONDS
     design_min_growth: float = 0.05
     actionable_designs_only: bool = True
     run_amplification: bool = True
@@ -256,6 +258,9 @@ class ProductionWorkflowConfig:
                 "strain_design_seed must be an integer in the Gurobi-compatible range "
                 f"[0, {_STRAIN_DESIGN_SEED_MAX}]"
             )
+        validate_max_seconds(
+            self.strain_design_max_seconds, "strain_design_max_seconds"
+        )
         if self.design_min_growth < 0:
             raise ValueError("design_min_growth must be non-negative")
         if self.fseof_steps < 2 or self.fvseof_steps < 2:
@@ -901,6 +906,7 @@ def _run_production_target_discovery(
             min_growth=config.design_min_growth,
             actionable_only=config.actionable_designs_only,
             seed=config.strain_design_seed,
+            max_seconds=config.strain_design_max_seconds,
         )
         robustknock_result = robustknock(
             working,
@@ -911,6 +917,7 @@ def _run_production_target_discovery(
             min_growth=config.design_min_growth,
             actionable_only=config.actionable_designs_only,
             seed=config.strain_design_seed,
+            max_seconds=config.strain_design_max_seconds,
         )
 
     fseof_result = None
@@ -1003,6 +1010,7 @@ def _run_production_target_discovery(
             reference_method=config.reference_method,
             requested_solver=config.solver,
             strain_design_seed=config.strain_design_seed,
+            strain_design_max_seconds=config.strain_design_max_seconds,
             validation_candidate_policy=dict(VALIDATION_CANDIDATE_POLICY),
         ),
         "source_model_sha256": original_fingerprint,

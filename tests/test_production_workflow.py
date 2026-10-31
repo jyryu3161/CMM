@@ -193,6 +193,45 @@ def test_default_shortlist_capacity_covers_independent_methods_and_kos() -> None
             product="PRODUCT",
             amplification_loop_diagnostic_top_n=19,
         )
+
+
+def test_config_bounds_the_strain_design_search_and_round_trips_the_bound(
+    tmp_path,
+) -> None:
+    """OptKnock/RobustKnock can stall forever inside straindesign; the default must end them."""
+
+    config = ProductionWorkflowConfig(model_path="model.xml", product="PRODUCT")
+    assert config.strain_design_max_seconds == 3600.0
+
+    unbounded = ProductionWorkflowConfig(
+        model_path="model.xml", product="PRODUCT", strain_design_max_seconds=None
+    )
+    assert unbounded.strain_design_max_seconds is None
+
+    for bad in (0, -5.0, float("nan"), float("inf"), True, "600"):
+        with pytest.raises(ValueError, match="strain_design_max_seconds"):
+            ProductionWorkflowConfig(
+                model_path="model.xml",
+                product="PRODUCT",
+                strain_design_max_seconds=bad,  # type: ignore[arg-type]
+            )
+
+    config_path = tmp_path / "workflow.json"
+    for written in (90.0, None):
+        config_path.write_text(
+            json.dumps(
+                {
+                    "model_path": "model.xml",
+                    "product": "PRODUCT",
+                    "strain_design_max_seconds": written,
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert (
+            ProductionWorkflowConfig.from_json(config_path).strain_design_max_seconds
+            == written
+        )
     with pytest.raises(ValueError, match="display-ranked single-KO candidate"):
         ProductionWorkflowConfig(
             model_path="model.xml",
@@ -1671,10 +1710,12 @@ def test_full_mocked_workflow_is_publication_valid_and_exports_candidate_metadat
 
     monkeypatch.setattr(production, "batch_comparison", fake_batch)
     strain_design_calls: list[tuple[str, int]] = []
+    strain_design_limits: list[float | None] = []
 
     def fake_optknock(*args, **kwargs):
         del args
         strain_design_calls.append(("optknock", int(kwargs["seed"])))
+        strain_design_limits.append(kwargs["max_seconds"])
         return StrainDesignResult(
             "optknock",
             "PRODUCT",
@@ -1685,6 +1726,7 @@ def test_full_mocked_workflow_is_publication_valid_and_exports_candidate_metadat
     def fake_robustknock(*args, **kwargs):
         del args
         strain_design_calls.append(("robustknock", int(kwargs["seed"])))
+        strain_design_limits.append(kwargs["max_seconds"])
         return StrainDesignResult(
             "robustknock",
             "PRODUCT",
@@ -1825,6 +1867,7 @@ def test_full_mocked_workflow_is_publication_valid_and_exports_candidate_metadat
         substrate="SOURCE_A",
         output_dir=output,
         strain_design_seed=53,
+        strain_design_max_seconds=90.0,
         top_single_knockouts_per_method=1,
         top_amplification_targets_per_method=1,
         validation=ValidationConfig(
@@ -1838,6 +1881,7 @@ def test_full_mocked_workflow_is_publication_valid_and_exports_candidate_metadat
     validated = validate_run(output)
 
     assert strain_design_calls == [("optknock", 53), ("robustknock", 53)]
+    assert strain_design_limits == [90.0, 90.0]
     assert result.summary()["status"] == "complete"
     assert validated.artifact("gene_knockout_mapping", required=False) is not None
     recommendations = pd.read_csv(output / "07_validation/recommendations.csv")
@@ -1851,6 +1895,8 @@ def test_full_mocked_workflow_is_publication_valid_and_exports_candidate_metadat
     exported_provenance = json.loads((output / "00_provenance.json").read_text())
     assert exported_config["strain_design_seed"] == 53
     assert exported_provenance["parameters"]["strain_design_seed"] == 53
+    assert exported_config["strain_design_max_seconds"] == 90.0
+    assert exported_provenance["parameters"]["strain_design_max_seconds"] == 90.0
     assert "amplification_target_ranking" in manifest["artifacts"]
     assert "variability_supported_amplification_targets" in manifest["artifacts"]
     for filename in ("fseof.csv", "fvseof.csv"):

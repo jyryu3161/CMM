@@ -172,7 +172,8 @@ run_single_knockout=True, single_knockout_genes=None,
 top_single_knockouts_per_method=5, viability_fraction=0.1,
 product_improvement_tolerance=1e-6, run_strain_design=True, max_knockouts=3,
 optknock_max_solutions=5, robustknock_max_solutions=8, design_min_growth=0.05,
-strain_design_seed=0, actionable_designs_only=True, run_amplification=True, fseof_steps=10,
+strain_design_seed=0, strain_design_max_seconds=3600.0, actionable_designs_only=True,
+run_amplification=True, fseof_steps=10,
 fvseof_steps=10,
 top_amplification_targets_per_method=10,
 scan_fraction_min=0.1, scan_fraction_max=0.9, fvseof_biomass_fraction=0.95,
@@ -187,6 +188,11 @@ sampling=SamplingConfig())`.
 `strain_design_seed` must be an integer from `0` through `2_000_000_000` (booleans and floats
 are rejected). The workflow forwards the same value to OptKnock and RobustKnock. It is distinct
 from `validation.sampling.seed`; both must remain explicit in a publication config.
+
+`strain_design_max_seconds` (default `3600.0`; `null`/`None` = no limit) is the wall-clock
+budget of each OptKnock and RobustKnock search; see the strain-design reference below for
+what a search cut at the limit returns. It must be a positive, finite number (booleans and
+strings are rejected).
 
 The two capacity limits must cover the independent candidate pools. With the defaults,
 `amplification_loop_diagnostic_top_n >= 2 * top_amplification_targets_per_method` and
@@ -558,9 +564,11 @@ conclusions without saying so.
 from cmm.features import optknock, robustknock
 
 optknock(model, product, *, biomass=None, max_knockouts=3, max_solutions=5,
-         min_growth=0.05, condition=None, actionable_only=True, seed=0)
+         min_growth=0.05, condition=None, actionable_only=True, seed=0,
+         max_seconds=3600.0)
 robustknock(model, product, *, biomass=None, max_knockouts=3, max_solutions=8,
-            min_growth=0.05, condition=None, actionable_only=True, seed=0)
+            min_growth=0.05, condition=None, actionable_only=True, seed=0,
+            max_seconds=3600.0)
 ```
 
 `StrainDesignResult`: `.designs`, `.best()`. `StrainDesign`: `.knockouts`, `.growth`,
@@ -572,6 +580,17 @@ the `straindesign` MILP search. The result records it in `metadata["seed"]`,
 `metadata["parameters"]["strain_design_seed"]`. Never omit it from a publication protocol:
 without explicit forwarding, `straindesign` generates a random seed for each call, so otherwise
 identical runs can follow different MILP paths and return different finite solution pools.
+
+`max_seconds` (default `3600.0`; `None` = no limit) is passed to `straindesign` as its
+`time_limit`. Without it a search can run forever: `straindesign` 1.18 re-solves one MILP
+indefinitely when its "minimise interventions" step is numerically infeasible, and a
+1,440-reaction model sat in that state for 24 hours with no output. A search that reaches
+the limit returns the designs found so far, emits a `UserWarning`, and records
+`straindesign_time_limit_reached=True`, `straindesign_search_complete=False`,
+`straindesign_search_elapsed_s` and `max_seconds` in `metadata["parameters"]`. The
+elapsed time includes preprocessing, so a search that finished just inside its limit can be
+reported as cut - the safe error. Never rank or publish a cut search as if it were
+complete: the production workflow marks it `partial` and withholds its recommendations.
 
 **Rank by `guaranteed_product`, never `max_product`.** A design is only valuable if the cell
 *cannot* maximize growth without producing; `max_product` is what the cell could do if it

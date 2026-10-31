@@ -129,6 +129,27 @@ obsolete internal planning documents are removed from the public source tree.
 
 ### Fixed
 
+- **OptKnock and RobustKnock can no longer run forever.** `straindesign` 1.18 finds the optimal
+  design, then solves a second MILP to minimise the interventions. When that solve is not
+  optimal - on a 1,440-reaction model Gurobi reported "Model is infeasible" straight after
+  "max constraint violation 4.75e-09 exceeds tolerance" - the inner loop breaks without
+  excluding the solution it just found, and the outer loop re-solves the identical MILP.
+  `max_solutions` is never reached because nothing is added, and CMM passed no time limit, so
+  two production runs sat in it for 24 hours with no output and no way to see where. Whether
+  a run falls in depends on solver numerics (it moved with the thread count), not on the
+  model alone. `optknock`/`robustknock` now take `max_seconds` and the workflow takes
+  `strain_design_max_seconds`, both defaulting to 3600 s, forwarded as `straindesign`'s
+  `time_limit`. The regression test drives the real `straindesign` loop on a five-reaction
+  model with the second solve forced non-optimal.
+- **A search the clock ended is no longer reported as complete.** `straindesign` tests the
+  remaining time only before a solve and keeps the status of the last one, so it can return
+  `optimal` with no designs, or fewer than a finished search would have found. CMM took that
+  at its word (`straindesign_search_complete=True`). It now also compares the elapsed time
+  with the limit and records `straindesign_time_limit_reached`,
+  `straindesign_search_elapsed_s` and `max_seconds`; a cut search emits a `UserWarning` and
+  the workflow reports its artifact as `partial`, as it already did for `time_limit`. The
+  elapsed time includes preprocessing, so a search that finished just inside its limit can be
+  counted as cut - the safe error.
 - **The desktop forms no longer lay themselves out differently on macOS.** `QFormLayout` takes
   its alignment and field-growth policy from the platform style, and the styles disagree: most
   give `AlignLeft` with `AllNonFixedFieldsGrow`, macOS gives `AlignHCenter` with
@@ -165,6 +186,11 @@ obsolete internal planning documents are removed from the public source tree.
 
 ### Changed
 
+- **OptKnock and RobustKnock now have a one-hour budget by default** (`max_seconds=3600.0`,
+  workflow `strain_design_max_seconds`). A search that legitimately needs longer returns its
+  designs so far, marked incomplete, instead of running to the end; pass `None`/`null` or a
+  larger value to restore the unbounded behaviour. Where it terminated, a 1,440-reaction model
+  took 4-5 minutes per search.
 - Internal planning ledgers, completion notes, and machine-specific analysis notes are no
   longer part of the public source tree or source distribution. Generated SC-01 run bundles
   remain user-owned analysis artifacts rather than release inputs.
