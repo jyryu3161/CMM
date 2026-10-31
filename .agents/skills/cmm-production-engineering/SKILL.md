@@ -65,6 +65,9 @@ Use direct documented CMM analyses only when the user narrows the request to one
   passes that same seed to OptKnock and RobustKnock, and both result provenances must record it.
   Do not omit the field and let `straindesign` generate a hidden per-call seed; that can change
   MILP search paths, returned solution pools, and runtime between otherwise identical runs.
+- Keep `strain_design_max_seconds` set (default 3600). `straindesign` can re-solve one MILP
+  forever without output; a search cut at the limit is `straindesign_search_complete=false`
+  and its designs are an open list, never a ranking.
 - The `nature-r` renderer requires `Rscript` and packages meeting the renderer's compatible
   minimum versions. Restore `renv.lock` from the matching source revision when exact
   publication reproduction is required; CI verifies that locked environment. Treat a missing

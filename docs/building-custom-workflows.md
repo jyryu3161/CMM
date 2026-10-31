@@ -104,6 +104,7 @@ with an id present in the exact SBML model.
   "top_amplification_targets_per_method": 10,
   "max_knockouts": 3,
   "strain_design_seed": 0,
+  "strain_design_max_seconds": 3600,
   "fseof_steps": 10,
   "fvseof_steps": 10,
   "amplification_loop_diagnostic_top_n": 20,
@@ -141,6 +142,11 @@ both OptKnock and RobustKnock and must be an integer in `0..2_000_000_000`; bool
 are invalid. It is separate from `validation.sampling.seed`. Omitting explicit seed forwarding
 would allow `straindesign` to invent a new random seed per call, changing MILP search paths,
 runtime, or finite solution pools in otherwise identical runs.
+
+`strain_design_max_seconds` bounds each OptKnock and RobustKnock search (default `3600`;
+`null` removes the bound). Leave it set: `straindesign` can re-solve one MILP forever and
+prints nothing while it does. A search that reaches the bound is reported as incomplete and
+its artifact is `partial`.
 
 Run analysis, rendering, and validation together:
 

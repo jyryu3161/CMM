@@ -653,6 +653,8 @@ contract is that it:
 - forwards the explicit workflow `strain_design_seed` to both design methods and records it in
   resolved config, run provenance, and method metadata; it never permits a hidden
   backend-generated random seed;
+- bounds each OptKnock/RobustKnock search with `strain_design_max_seconds` and treats a search
+  the clock ended - including one `straindesign` still labels `optimal` - as incomplete;
 - exports independent top-10 FSEOF and top-10 FVSEOF rankings and tidy trajectory tables
   separately, without using their intersection as a selection gate;
 - compares standard and fastSNP loopless FVA capacity for publication amplification candidates,

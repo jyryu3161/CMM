@@ -207,6 +207,13 @@ through different search paths and change runtime or the returned solution pool.
 or publish unseeded searches as though they were exact reruns. Record the seed in each method's
 metadata and the run-level config/provenance.
 
+Each search also has a wall-clock budget, `strain_design_max_seconds` (default 3600 s;
+`null` = none). `straindesign` has no limit of its own and can re-solve one MILP forever,
+so an unbounded search is not merely slow. A search cut at the budget is recorded as
+incomplete (`straindesign_time_limit_reached`, `straindesign_search_complete=false`), the
+artifact is `partial`, and its designs are not ranked as a result. Raising the budget is a
+choice to record in the protocol; it does not make a stalled search finish.
+
 Rank by `guaranteed_product`, never by `max_product`. Maximum product is a cooperative upper
 bound; guaranteed product is the worst production among growth-optimal states. A design with
 zero guaranteed product is not growth-coupled even if its maximum product is large.

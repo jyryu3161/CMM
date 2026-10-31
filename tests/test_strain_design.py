@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import pytest
 from cobra import Metabolite, Model, Reaction
 
@@ -10,7 +12,11 @@ pytest.importorskip("straindesign")
 
 from cmm.core.condition import Condition, ReactionBound  # noqa: E402
 from cmm.core.solvers import SolverCapabilityError  # noqa: E402
-from cmm.features.strain_design import optknock, robustknock  # noqa: E402
+from cmm.features.strain_design import (  # noqa: E402
+    STRAIN_DESIGN_MAX_SECONDS,
+    optknock,
+    robustknock,
+)
 
 SUCC = "EX_succ_e"
 
@@ -281,3 +287,173 @@ def test_strain_design_accepts_and_records_a_condition(ecoli_core):
     assert applied["oxygen_exchange"]["lower_bound"] == pytest.approx(0.0)
     assert ecoli_core.reactions.EX_o2_e.lower_bound == before  # model left untouched
     assert result.designs
+
+
+class _Solutions:
+    """The part of straindesign's ``SDSolutions`` that CMM reads."""
+
+    def __init__(self, status: str, reaction_sd: list | None = None) -> None:
+        self.status = status
+        self.reaction_sd = reaction_sd or []
+
+
+def test_strain_design_forwards_a_time_limit_to_straindesign(
+    anaerobic_ecoli, monkeypatch
+):
+    """straindesign has no time limit unless it is given one, and then it can never return."""
+
+    import straindesign as sd
+
+    assert STRAIN_DESIGN_MAX_SECONDS == 3600.0
+    seen: list[object] = []
+
+    def record(*args, **kwargs):
+        del args
+        seen.append(kwargs.get("time_limit", "absent"))
+        return _Solutions("optimal")
+
+    monkeypatch.setattr(sd, "compute_strain_designs", record)
+
+    default = optknock(anaerobic_ecoli, SUCC, max_knockouts=1, max_solutions=1)
+    explicit = robustknock(
+        anaerobic_ecoli, SUCC, max_knockouts=1, max_solutions=1, max_seconds=120
+    )
+    unbounded = optknock(
+        anaerobic_ecoli, SUCC, max_knockouts=1, max_solutions=1, max_seconds=None
+    )
+
+    assert seen == [3600.0, 120.0, "absent"]
+    assert default.metadata["parameters"]["max_seconds"] == 3600.0
+    assert explicit.metadata["parameters"]["max_seconds"] == 120
+    assert unbounded.metadata["parameters"]["max_seconds"] is None
+
+
+@pytest.mark.parametrize(
+    "value", [0, -1.0, float("nan"), float("inf"), True, "60"], ids=repr
+)
+def test_strain_design_rejects_a_meaningless_time_limit(anaerobic_ecoli, value):
+    with pytest.raises(ValueError, match="max_seconds"):
+        optknock(anaerobic_ecoli, SUCC, max_seconds=value)
+
+
+def test_a_search_cut_by_the_clock_is_not_reported_complete(
+    anaerobic_ecoli, monkeypatch
+):
+    """straindesign leaves status 'optimal' when the clock runs out between two solves.
+
+    Its outer loop tests the remaining time only before a solve, and ``status`` is the last
+    solve's. So the limit can end a search that says 'optimal' with fewer designs than a
+    finished search would have - which CMM then reported as a complete search.
+    """
+
+    import straindesign as sd
+
+    def runs_past_its_limit(*args, **kwargs):
+        del args
+        time.sleep(kwargs["time_limit"] + 0.05)
+        return _Solutions("optimal")
+
+    monkeypatch.setattr(sd, "compute_strain_designs", runs_past_its_limit)
+
+    with pytest.warns(UserWarning, match="time limit"):
+        result = optknock(
+            anaerobic_ecoli, SUCC, max_knockouts=1, max_solutions=1, max_seconds=0.05
+        )
+
+    parameters = result.metadata["parameters"]
+    assert parameters["straindesign_search_status"] == "optimal"  # backend's own word
+    assert parameters["straindesign_time_limit_reached"] is True
+    assert parameters["straindesign_search_complete"] is False
+    assert parameters["straindesign_search_elapsed_s"] >= 0.05
+
+
+@pytest.mark.parametrize("status", ["time_limit", "time_limit_w_sols"])
+def test_a_backend_reported_time_limit_is_never_complete(
+    anaerobic_ecoli, monkeypatch, status
+):
+    import straindesign as sd
+
+    monkeypatch.setattr(
+        sd, "compute_strain_designs", lambda *a, **k: _Solutions(status)
+    )
+    with pytest.warns(UserWarning, match="time limit"):
+        result = robustknock(
+            anaerobic_ecoli, SUCC, max_knockouts=1, max_solutions=1, max_seconds=600
+        )
+    parameters = result.metadata["parameters"]
+    assert parameters["straindesign_search_status"] == status
+    assert parameters["straindesign_time_limit_reached"] is True
+    assert parameters["straindesign_search_complete"] is False
+
+
+def test_a_search_that_finishes_inside_its_limit_stays_complete(
+    anaerobic_ecoli, monkeypatch, recwarn
+):
+    import straindesign as sd
+
+    monkeypatch.setattr(
+        sd, "compute_strain_designs", lambda *a, **k: _Solutions("optimal")
+    )
+    unbounded = optknock(
+        anaerobic_ecoli, SUCC, max_knockouts=1, max_solutions=1, max_seconds=None
+    )
+    bounded = optknock(
+        anaerobic_ecoli, SUCC, max_knockouts=1, max_solutions=1, max_seconds=600
+    )
+    for result in (unbounded, bounded):
+        parameters = result.metadata["parameters"]
+        assert parameters["straindesign_time_limit_reached"] is False
+        assert parameters["straindesign_search_complete"] is True
+    assert not [w for w in recwarn if "time limit" in str(w.message)]
+
+
+def test_a_stalled_straindesign_search_returns_at_the_time_limit(
+    restricted_license_strain_model, monkeypatch
+):
+    """Regression: straindesign 1.18 ``compute_optimal`` re-solved the same MILP forever.
+
+    After the MILP finds its optimum it runs a second solve to minimise the number of
+    interventions. When that solve is not optimal (Gurobi reported 'Model is infeasible'
+    straight after 'max constraint violation 4.75e-09 exceeds tolerance' on a 1,440-reaction
+    model) the inner loop breaks WITHOUT adding an exclusion constraint, the outer loop
+    solves the identical MILP again, and ``max_solutions`` is never reached because nothing
+    is ever added. A production run sat in it for 24 hours with no output.
+
+    The second solve of every outer iteration is forced non-optimal here; everything else
+    is straindesign's real code path.
+    """
+
+    from straindesign.names import INFEASIBLE
+    from straindesign.strainDesignMILP import SDMILP
+
+    real_solve = SDMILP.solveZ
+    solves = {"n": 0}
+
+    def minimisation_never_optimal(self):
+        solves["n"] += 1
+        # Without the time limit this loop does not end. Fail instead of hanging CI.
+        assert solves["n"] < 200_000, "straindesign kept re-solving past the time limit"
+        z, x, opt, status = real_solve(self)
+        if solves["n"] % 2 == 0:  # the "minimise interventions" solve
+            status = INFEASIBLE
+        return z, x, opt, status
+
+    monkeypatch.setattr(SDMILP, "solveZ", minimisation_never_optimal)
+
+    started = time.monotonic()
+    with pytest.warns(UserWarning, match="time limit"):
+        result = optknock(
+            restricted_license_strain_model,
+            "PRODUCT",
+            max_knockouts=1,
+            max_solutions=2,
+            seed=17,
+            max_seconds=2.0,
+        )
+
+    assert time.monotonic() - started < 60
+    parameters = result.metadata["parameters"]
+    assert parameters["straindesign_time_limit_reached"] is True
+    assert parameters["straindesign_search_complete"] is False
+    assert parameters["max_seconds"] == 2.0
+    assert not result.designs  # nothing was recorded: the search never made progress
